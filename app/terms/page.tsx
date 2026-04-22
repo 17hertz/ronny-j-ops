@@ -34,7 +34,8 @@ export default function TermsPage() {
             any associated subdomains (the &ldquo;Service&rdquo;). The Service
             is owned by <strong>Ronny J Listen UP LLC</strong> (a Florida
             limited liability company) and operated on its behalf by{" "}
-            <strong>17hertz Inc.</strong> In these Terms, &ldquo;we&rdquo; and
+            <strong>17 Hertz Inc.</strong> (a Nevada corporation). In these
+            Terms, &ldquo;we&rdquo; and
             &ldquo;us&rdquo; refer to those two entities together;
             &ldquo;you&rdquo; refers to the person or business accessing the
             Service.
@@ -169,7 +170,7 @@ export default function TermsPage() {
         <Section title="6. Intellectual property">
           <p>
             The Service, including its source code, interface, copy, and
-            design, is the intellectual property of 17hertz Inc. and Ronny J
+            design, is the intellectual property of 17 Hertz Inc. and Ronny J
             Listen UP LLC. You receive only a limited, revocable,
             non-transferable license to use the Service for its intended
             purpose. You may not copy, reverse-engineer, or build competing
@@ -225,7 +226,7 @@ export default function TermsPage() {
         <Section title="10. Indemnification">
           <p>
             You agree to defend, indemnify, and hold harmless Ronny J Listen
-            UP LLC, 17hertz Inc., and their officers, employees, and agents
+            UP LLC, 17 Hertz Inc., and their officers, employees, and agents
             from any claim, loss, or expense (including reasonable
             attorneys&apos; fees) arising from: (a) your breach of these
             Terms, (b) your submission of inaccurate W-9 or invoice data, or
@@ -275,7 +276,7 @@ export default function TermsPage() {
           <p>
             Ronny J Listen UP LLC
             <br />
-            c/o 17hertz Inc.
+            c/o 17 Hertz Inc.
             <br />
             Email:{" "}
             <a href="mailto:jason@17hertz.io">jason@17hertz.io</a>

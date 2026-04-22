@@ -37,8 +37,9 @@ export default function PrivacyPage() {
             communications sent through the Service.
           </p>
           <p>
-            <strong>17hertz Inc.</strong> is the operator and acts as a service
-            provider / data processor on behalf of Ronny J Listen UP LLC. Where
+            <strong>17 Hertz Inc.</strong> (a Nevada corporation) is the
+            operator and acts as a service provider / data processor on behalf
+            of Ronny J Listen UP LLC. Where
             this policy says &ldquo;we&rdquo; or &ldquo;us,&rdquo; it refers to
             both entities in their respective roles.
           </p>
@@ -313,7 +314,7 @@ export default function PrivacyPage() {
           <p>
             Ronny J Listen UP LLC
             <br />
-            c/o 17hertz Inc.
+            c/o 17 Hertz Inc.
             <br />
             Email:{" "}
             <a href="mailto:jason@17hertz.io">jason@17hertz.io</a>
