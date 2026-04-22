@@ -47,6 +47,7 @@ type VendorRow = {
 type DocumentRow = {
   id: string;
   kind: string;
+  storage_path: string | null;
   invoice_number: string | null;
   invoice_amount_cents: number | null;
   invoice_status: string | null;
@@ -56,6 +57,8 @@ type DocumentRow = {
   uploaded_at: string;
   original_filename: string | null;
 };
+
+type InvoiceWithUrl = DocumentRow & { signedUrl: string | null };
 
 export default async function VendorAccountPage() {
   const supabase = createClient();
@@ -87,16 +90,29 @@ export default async function VendorAccountPage() {
   const { data: docs } = (await (admin as any)
     .from("vendor_documents")
     .select(
-      "id, kind, invoice_number, invoice_amount_cents, invoice_status, invoice_description, generated_by_system, submitted_at, uploaded_at, original_filename"
+      "id, kind, storage_path, invoice_number, invoice_amount_cents, invoice_status, invoice_description, generated_by_system, submitted_at, uploaded_at, original_filename"
     )
     .eq("vendor_id", vendor.id)
     .order("uploaded_at", { ascending: false })) as {
     data: DocumentRow[] | null;
   };
 
-  const invoices = (docs ?? []).filter((d) => d.kind === "invoice");
+  const rawInvoices = (docs ?? []).filter((d) => d.kind === "invoice");
   const w9s = (docs ?? []).filter((d) => d.kind === "w9");
   const hasW9 = w9s.length > 0;
+
+  // Generate a short-lived signed URL for each invoice PDF so the vendor can
+  // click through and view their own submission. Bucket is private — this is
+  // the only way in. 10 minutes is plenty for a click-through.
+  const invoices: InvoiceWithUrl[] = await Promise.all(
+    rawInvoices.map(async (inv) => {
+      if (!inv.storage_path) return { ...inv, signedUrl: null };
+      const { data: signed } = await admin.storage
+        .from("vendor-docs")
+        .createSignedUrl(inv.storage_path, 600);
+      return { ...inv, signedUrl: signed?.signedUrl ?? null };
+    })
+  );
 
   const statusIsApproved = vendor.status === "approved";
   const statusIsRejected = vendor.status === "rejected";
@@ -188,11 +204,8 @@ export default async function VendorAccountPage() {
             </p>
           ) : (
             <ul className="mt-4 space-y-2">
-              {invoices.map((inv) => (
-                <li
-                  key={inv.id}
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-4 py-3"
-                >
+              {invoices.map((inv) => {
+                const body = (
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-medium text-neutral-100">
@@ -202,6 +215,11 @@ export default async function VendorAccountPage() {
                         {inv.generated_by_system && (
                           <span className="ml-2 font-mono text-[10px] uppercase tracking-wider text-brand">
                             generated
+                          </span>
+                        )}
+                        {inv.signedUrl && (
+                          <span className="ml-2 font-mono text-[10px] uppercase tracking-wider text-neutral-500">
+                            view pdf ↗
                           </span>
                         )}
                       </div>
@@ -222,8 +240,27 @@ export default async function VendorAccountPage() {
                     </div>
                     <InvoiceStatusBadge status={inv.invoice_status} />
                   </div>
-                </li>
-              ))}
+                );
+
+                return (
+                  <li key={inv.id}>
+                    {inv.signedUrl ? (
+                      <a
+                        href={inv.signedUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block rounded-md border border-neutral-800 bg-neutral-950 px-4 py-3 transition hover:border-brand hover:bg-neutral-900"
+                      >
+                        {body}
+                      </a>
+                    ) : (
+                      <div className="block rounded-md border border-neutral-800 bg-neutral-950 px-4 py-3">
+                        {body}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
