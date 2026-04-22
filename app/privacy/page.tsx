@@ -3,7 +3,7 @@ import Link from "next/link";
 export const metadata = {
   title: "Privacy Policy · Ronny J Ops",
   description:
-    "How Ronny J Listen UP LLC and 17hertz collect, use, and protect information processed through the Ronny J Ops system.",
+    "How 17 Hertz Inc. collects, uses, and protects information processed through the Ronny J Ops system.",
 };
 
 export default function PrivacyPage() {
@@ -29,19 +29,24 @@ export default function PrivacyPage() {
       <div className="mt-12 text-neutral-300 [&_a]:text-brand [&_a]:underline [&_a:hover]:text-white [&_strong]:text-neutral-100 [&_ul]:mt-2 [&_ul]:list-disc [&_ul]:space-y-1.5 [&_ul]:pl-6 [&_li]:marker:text-neutral-600">
         <Section title="Who we are">
           <p>
-            The Ronny J Ops system (the &ldquo;Service&rdquo;) is operated at{" "}
-            <span className="text-neutral-100">ronnyj.17hertz.com</span> on
-            behalf of <strong>Ronny J Listen UP LLC</strong> (a Florida limited
-            liability company), which is the data controller and the party
-            responsible for the business relationship with recipients of
-            communications sent through the Service.
+            The Ronny J Ops system (the &ldquo;Service&rdquo;) is owned and
+            operated by <strong>17 Hertz Inc.</strong>, a Nevada corporation,
+            at <span className="text-neutral-100">ronnyj.17hertz.com</span>. 17
+            Hertz Inc. is the data controller for information processed
+            through the Service and the sender of record for SMS, WhatsApp,
+            and email messages sent from it. Where this policy says
+            &ldquo;we,&rdquo; &ldquo;us,&rdquo; or &ldquo;our,&rdquo; it means
+            17 Hertz Inc.
           </p>
           <p>
-            <strong>17 Hertz Inc.</strong> (a Nevada corporation) is the
-            operator and acts as a service provider / data processor on behalf
-            of Ronny J Listen UP LLC. Where
-            this policy says &ldquo;we&rdquo; or &ldquo;us,&rdquo; it refers to
-            both entities in their respective roles.
+            The Service is used to coordinate operations for the recording
+            artist Ronny J. Vendor payments are made by{" "}
+            <strong>Ronny J Listen UP LLC</strong> (a Florida limited
+            liability company), which is the tax payer of record for 1099
+            reporting. 17 Hertz Inc. operates the vendor intake portal;
+            Ronny J Listen UP LLC issues the payments and the year-end 1099s.
+            Their respective roles are called out explicitly in the sections
+            below.
           </p>
           <p>
             Contact: <a href="mailto:jason@17hertz.io">jason@17hertz.io</a>
@@ -108,8 +113,9 @@ export default function PrivacyPage() {
               reminder queue for authenticated team members.
             </li>
             <li>
-              Process vendor intake submissions, verify W-9 data, and produce
-              year-end 1099 reporting for Ronny J Listen UP LLC.
+              Process vendor intake submissions, verify W-9 data, and forward
+              the information needed to Ronny J Listen UP LLC so it can
+              produce year-end 1099 reporting as the tax payer of record.
             </li>
             <li>
               Respond to opt-in, opt-out, and support requests.
@@ -129,11 +135,13 @@ export default function PrivacyPage() {
 
         <Section title="SMS, WhatsApp, and messaging (TCPA)">
           <p>
-            Message frequency varies based on your relationship with Ronny J
-            Listen UP LLC. Typical volume is a 24-hour and 1-hour reminder per
-            scheduled appointment, plus transactional confirmations.
-            Message-and-data rates may apply. Carriers are not liable for
-            delayed or undelivered messages.
+            SMS, WhatsApp, and RCS messages sent through the Service are sent
+            by <strong>17 Hertz Inc.</strong> as the registered A2P 10DLC
+            brand. Message frequency varies based on your engagement with
+            Ronny J and his team. Typical volume is a 24-hour and 1-hour
+            reminder per scheduled appointment, plus transactional
+            confirmations. Message-and-data rates may apply. Carriers are not
+            liable for delayed or undelivered messages.
           </p>
           <p>
             Reply <strong>STOP</strong> at any time to opt out of further SMS
@@ -155,32 +163,38 @@ export default function PrivacyPage() {
 
         <Section title="Email (CAN-SPAM)">
           <p>
-            Every email we send includes a working unsubscribe link and the
-            physical mailing address of Ronny J Listen UP LLC. Clicking the
-            unsubscribe link removes your address from all non-transactional
-            email within ten business days. Certain transactional messages
-            (e.g., &ldquo;we received your invoice&rdquo;) may still be sent
-            after unsubscribe if you have an active vendor engagement; those
-            messages will not contain marketing content.
+            Emails sent through the Service are sent by 17 Hertz Inc. and
+            include a working unsubscribe link plus the physical mailing
+            address of 17 Hertz Inc. Clicking the unsubscribe link removes
+            your address from all non-transactional email within ten business
+            days. Certain transactional messages (e.g., &ldquo;we received
+            your invoice&rdquo;) may still be sent after unsubscribe if you
+            have an active vendor engagement; those messages will not contain
+            marketing content.
           </p>
         </Section>
 
         <Section title="W-9 and tax identification data">
           <p>
-            When vendors submit a W-9 through the portal, we collect the full
-            Taxpayer Identification Number (SSN for individuals, EIN for
-            entities). Full TINs are encrypted at rest using column-level
-            encryption in our Supabase/Postgres database. Only the last four
-            digits are available in plaintext to authorized team members for
-            verification; decryption of the full TIN is limited to the
-            automated 1099 preparation process and to the finance contact of
-            record.
+            17 Hertz Inc. operates the vendor intake portal on behalf of{" "}
+            <strong>Ronny J Listen UP LLC</strong>, which is the tax payer of
+            record for vendor payments and the entity that will issue 1099
+            forms at year-end. When vendors submit a W-9 through the portal,
+            we collect the full Taxpayer Identification Number (SSN for
+            individuals, EIN for entities). Full TINs are encrypted at rest
+            using column-level encryption in our Supabase / Postgres database.
+            Only the last four digits are available in plaintext to authorized
+            team members for verification; decryption of the full TIN is
+            limited to the automated 1099 preparation process and to the
+            finance contact of record at Ronny J Listen UP LLC.
           </p>
           <p>
             Uploaded W-9 forms and invoices are stored in a private,
             access-controlled storage bucket. We retain W-9 records for four
             (4) years from the date of the last payment, per IRS guidance, and
-            then delete them.
+            then delete them. W-9 information is shared with Ronny J Listen UP
+            LLC and its accountants solely for the purpose of issuing those
+            1099s and for tax-compliance audits.
           </p>
         </Section>
 
@@ -312,12 +326,17 @@ export default function PrivacyPage() {
 
         <Section title="Contact">
           <p>
-            Ronny J Listen UP LLC
+            17 Hertz Inc.
             <br />
-            c/o 17 Hertz Inc.
+            Attn: Privacy
             <br />
             Email:{" "}
             <a href="mailto:jason@17hertz.io">jason@17hertz.io</a>
+          </p>
+          <p>
+            For questions about a specific payment, 1099, or vendor
+            engagement, Ronny J Listen UP LLC can be reached at the same
+            address.
           </p>
         </Section>
       </div>

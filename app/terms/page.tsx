@@ -3,7 +3,7 @@ import Link from "next/link";
 export const metadata = {
   title: "Terms of Service · Ronny J Ops",
   description:
-    "Terms governing use of the Ronny J Ops vendor portal and team dashboard, operated by 17hertz on behalf of Ronny J Listen UP LLC.",
+    "Terms governing use of the Ronny J Ops vendor portal and team dashboard, operated by 17 Hertz Inc.",
 };
 
 export default function TermsPage() {
@@ -32,13 +32,19 @@ export default function TermsPage() {
             These Terms govern your use of the Ronny J Ops system at{" "}
             <span className="text-neutral-100">ronnyj.17hertz.com</span> and
             any associated subdomains (the &ldquo;Service&rdquo;). The Service
-            is owned by <strong>Ronny J Listen UP LLC</strong> (a Florida
-            limited liability company) and operated on its behalf by{" "}
-            <strong>17 Hertz Inc.</strong> (a Nevada corporation). In these
-            Terms, &ldquo;we&rdquo; and
-            &ldquo;us&rdquo; refer to those two entities together;
-            &ldquo;you&rdquo; refers to the person or business accessing the
-            Service.
+            is owned and operated by <strong>17 Hertz Inc.</strong>, a Nevada
+            corporation. In these Terms, &ldquo;we,&rdquo; &ldquo;us,&rdquo;
+            and &ldquo;our&rdquo; refer to 17 Hertz Inc.; &ldquo;you&rdquo;
+            refers to the person or business accessing the Service.
+          </p>
+          <p>
+            The Service supports operations for the recording artist Ronny J.{" "}
+            <strong>Ronny J Listen UP LLC</strong>, a Florida limited
+            liability company, is the tax payer of record for vendor payments
+            processed through the Service and is the entity that issues
+            year-end 1099 forms. 17 Hertz Inc. operates the intake portal and
+            messaging infrastructure; Ronny J Listen UP LLC makes the payments
+            and handles tax reporting.
           </p>
           <p>
             By using the Service &mdash; including submitting a vendor intake
@@ -54,7 +60,7 @@ export default function TermsPage() {
         <Section title="2. Accounts and access">
           <p>
             Access to the team dashboard is by invitation only. If you are a
-            team member or authorized contractor of Ronny J Listen UP LLC, you
+            team member or authorized contractor working with Ronny J, you
             agree to:
           </p>
           <ul>
@@ -100,7 +106,8 @@ export default function TermsPage() {
             <li>
               Every invoice you upload reflects goods or services actually
               provided, at the rates that were agreed to with Ronny J Listen
-              UP LLC or its authorized representatives.
+              UP LLC or its authorized representatives (including 17 Hertz
+              Inc. acting on its behalf).
             </li>
             <li>
               You will promptly correct any errors you discover and notify us
@@ -118,10 +125,12 @@ export default function TermsPage() {
 
         <Section title="4. Messaging consent (SMS, WhatsApp, email)">
           <p>
+            SMS, WhatsApp, and email sent through the Service are sent by 17
+            Hertz Inc. as the registered A2P 10DLC brand and sending domain.
             If you opt in to receive messages from us (for example, by
             entering your mobile number in the intake form or the dashboard),
             you consent to receive automated transactional and service
-            messages related to your engagement with Ronny J Listen UP LLC.
+            messages related to your engagement with Ronny J and his team.
             Message frequency varies; typical messages include appointment
             reminders and vendor status updates. Message-and-data rates may
             apply.
@@ -131,7 +140,8 @@ export default function TermsPage() {
             any SMS or WhatsApp message to opt out of that channel, or email{" "}
             <a href="mailto:jason@17hertz.io">jason@17hertz.io</a> to opt out
             of email. Opt-outs do not terminate your underlying business
-            relationship with Ronny J Listen UP LLC.
+            relationship with Ronny J Listen UP LLC, which continues to handle
+            payments separately.
           </p>
         </Section>
 
@@ -170,11 +180,11 @@ export default function TermsPage() {
         <Section title="6. Intellectual property">
           <p>
             The Service, including its source code, interface, copy, and
-            design, is the intellectual property of 17 Hertz Inc. and Ronny J
-            Listen UP LLC. You receive only a limited, revocable,
-            non-transferable license to use the Service for its intended
-            purpose. You may not copy, reverse-engineer, or build competing
-            services based on the Service.
+            design, is the intellectual property of 17 Hertz Inc. You receive
+            only a limited, revocable, non-transferable license to use the
+            Service for its intended purpose. You may not copy,
+            reverse-engineer, or build competing services based on the
+            Service.
           </p>
           <p>
             Information you upload &mdash; invoices, W-9s, calendar data, task
@@ -211,23 +221,24 @@ export default function TermsPage() {
 
         <Section title="9. Limitation of liability">
           <p>
-            TO THE MAXIMUM EXTENT PERMITTED BY LAW, NEITHER RONNY J LISTEN UP
-            LLC NOR 17HERTZ INC. WILL BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-            CONSEQUENTIAL, SPECIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF
-            PROFITS, REVENUES, DATA, OR GOODWILL, ARISING OUT OF OR RELATED TO
-            YOUR USE OF THE SERVICE. OUR AGGREGATE LIABILITY FOR ANY CLAIM
-            RELATED TO THE SERVICE IS LIMITED TO THE GREATER OF ONE HUNDRED US
-            DOLLARS ($100) OR THE AMOUNTS PAID TO YOU BY RONNY J LISTEN UP LLC
-            UNDER THE SEPARATE AGREEMENT THAT GIVES RISE TO THE CLAIM IN THE
-            TWELVE MONTHS PRECEDING IT.
+            TO THE MAXIMUM EXTENT PERMITTED BY LAW, 17 HERTZ INC. WILL NOT BE
+            LIABLE FOR ANY INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL, OR
+            PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, REVENUES, DATA, OR
+            GOODWILL, ARISING OUT OF OR RELATED TO YOUR USE OF THE SERVICE.
+            17 HERTZ INC.&rsquo;S AGGREGATE LIABILITY FOR ANY CLAIM RELATED TO
+            THE SERVICE IS LIMITED TO THE GREATER OF ONE HUNDRED US DOLLARS
+            ($100) OR THE AMOUNTS PAID TO 17 HERTZ INC. BY YOU IN THE TWELVE
+            MONTHS PRECEDING THE CLAIM. NOTHING IN THESE TERMS LIMITS OR
+            AFFECTS YOUR SEPARATE PAYMENT RELATIONSHIP, IF ANY, WITH RONNY J
+            LISTEN UP LLC.
           </p>
         </Section>
 
         <Section title="10. Indemnification">
           <p>
-            You agree to defend, indemnify, and hold harmless Ronny J Listen
-            UP LLC, 17 Hertz Inc., and their officers, employees, and agents
-            from any claim, loss, or expense (including reasonable
+            You agree to defend, indemnify, and hold harmless 17 Hertz Inc.,
+            Ronny J Listen UP LLC, and their respective officers, employees,
+            and agents from any claim, loss, or expense (including reasonable
             attorneys&apos; fees) arising from: (a) your breach of these
             Terms, (b) your submission of inaccurate W-9 or invoice data, or
             (c) your violation of any law or third-party right in connection
@@ -249,13 +260,16 @@ export default function TermsPage() {
 
         <Section title="12. Governing law and disputes">
           <p>
-            These Terms are governed by the laws of the State of Florida,
+            These Terms are governed by the laws of the State of Nevada,
             without regard to conflict-of-laws rules. The exclusive venue for
             any dispute that is not subject to arbitration is the state and
-            federal courts located in Miami-Dade County, Florida, and you
-            consent to personal jurisdiction there. Nothing in these Terms
-            waives any non-waivable statutory right you may have under
-            applicable consumer-protection law.
+            federal courts located in Clark County, Nevada, and you consent
+            to personal jurisdiction there. Nothing in these Terms waives any
+            non-waivable statutory right you may have under applicable
+            consumer-protection law. Disputes involving the separate payment
+            relationship with Ronny J Listen UP LLC are governed by the law
+            and venue specified in any separate agreement between you and
+            Ronny J Listen UP LLC.
           </p>
         </Section>
 
@@ -274,12 +288,16 @@ export default function TermsPage() {
             Questions about these Terms can be directed to:
           </p>
           <p>
-            Ronny J Listen UP LLC
+            17 Hertz Inc.
             <br />
-            c/o 17 Hertz Inc.
+            Attn: Legal
             <br />
             Email:{" "}
             <a href="mailto:jason@17hertz.io">jason@17hertz.io</a>
+          </p>
+          <p>
+            Payment and 1099 questions can be directed to Ronny J Listen UP
+            LLC at the same address.
           </p>
         </Section>
       </div>
