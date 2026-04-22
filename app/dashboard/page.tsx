@@ -4,6 +4,10 @@ import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "./sign-out-button";
 import { SyncNowButton } from "./sync-now-button";
 import { TaskCheckbox } from "./task-checkbox";
+import {
+  labelFor,
+  type ServiceCategoryId,
+} from "@/lib/vendors/service-categories";
 
 export const dynamic = "force-dynamic";
 
@@ -172,6 +176,32 @@ export default async function DashboardPage() {
           error: string | null;
           sent_at: string | null;
           created_at: string;
+        }>
+      | null;
+  };
+
+  // Vendors awaiting review — the "approve this payout-eligible vendor"
+  // queue Jason/Ronny work. Only pull submitted + in_review so the panel
+  // doesn't fill with already-decided rows.
+  const { data: pendingVendors } = (await supabase
+    .from("vendors")
+    .select(
+      "id, legal_name, contact_email, service_category, status, submitted_at, ach_account_last4, secondary_payment_method, tin_match_status"
+    )
+    .in("status", ["submitted", "in_review"])
+    .order("submitted_at", { ascending: true })
+    .limit(10)) as {
+    data:
+      | Array<{
+          id: string;
+          legal_name: string;
+          contact_email: string;
+          service_category: string | null;
+          status: string;
+          submitted_at: string | null;
+          ach_account_last4: string | null;
+          secondary_payment_method: string | null;
+          tin_match_status: string | null;
         }>
       | null;
   };
@@ -393,6 +423,95 @@ export default async function DashboardPage() {
             <p className="text-sm text-neutral-500">
               No reminders have been sent yet. Once attendees are attached to
               sessions, 24h and 1h reminders will show up here.
+            </p>
+          )}
+        </Panel>
+
+        <Panel
+          eyebrow="Vendors"
+          title="Awaiting review"
+          cta={
+            <div className="flex items-center gap-2">
+              <Link
+                href="/dashboard/vendors/invite"
+                className="rounded-md border border-brand bg-brand px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90"
+              >
+                Invite vendor
+              </Link>
+              <Link
+                href="/dashboard/vendors"
+                className="rounded-md border border-neutral-800 px-3 py-1.5 text-xs text-neutral-300 transition hover:border-brand hover:text-brand"
+              >
+                View all
+              </Link>
+            </div>
+          }
+        >
+          {pendingVendors && pendingVendors.length > 0 ? (
+            <ul className="space-y-2">
+              {pendingVendors.map((v) => (
+                <li key={v.id}>
+                  <Link
+                    href={`/dashboard/vendors/${v.id}`}
+                    className="block rounded-md border border-neutral-800 px-3 py-2 text-sm transition hover:border-brand"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-neutral-100">
+                          {v.legal_name}
+                        </div>
+                        <div className="truncate text-xs text-neutral-500">
+                          {labelFor(
+                            v.service_category as ServiceCategoryId | null
+                          )}
+                          {v.contact_email && (
+                            <>
+                              {" · "}
+                              <span className="text-neutral-600">
+                                {v.contact_email}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <span
+                        className={`font-mono text-[10px] uppercase tracking-wider ${
+                          v.status === "in_review"
+                            ? "text-amber-400"
+                            : "text-neutral-500"
+                        }`}
+                      >
+                        {v.status}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex items-center gap-3 text-[11px] text-neutral-600">
+                      {v.ach_account_last4 && (
+                        <span>ACH ···{v.ach_account_last4}</span>
+                      )}
+                      {v.secondary_payment_method && (
+                        <span>+{v.secondary_payment_method}</span>
+                      )}
+                      {v.tin_match_status &&
+                        v.tin_match_status !== "pending" && (
+                          <span
+                            className={
+                              v.tin_match_status === "match"
+                                ? "text-emerald-500"
+                                : "text-red-400"
+                            }
+                          >
+                            TIN: {v.tin_match_status}
+                          </span>
+                        )}
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-neutral-500">
+              No vendors awaiting review. When someone submits the intake
+              form, they&apos;ll land here for Jason or Ronny to approve.
             </p>
           )}
         </Panel>

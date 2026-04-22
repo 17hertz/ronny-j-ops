@@ -1,0 +1,44 @@
+Ronny J Ops — deferred / future work
+=====================================
+Items we've decided NOT to build right now, but want to revisit once the
+app is further along / revenue is coming in. Oldest items at the top.
+
+
+[ ] Digital W9 signature (DocuSeal integration)
+    Added: 2026-04-22
+    Status: Deferred — don't want to incur $20/mo until app is finished.
+    Scope:
+      - DocuSeal cloud account ($20/mo)
+      - Create a W9 template in DocuSeal (upload IRS fw9.pdf, place fields)
+      - Add DOCUSEAL_API_KEY + DOCUSEAL_W9_TEMPLATE_ID to env
+      - On vendor submit: auto-create a DocuSeal submission pre-filled with
+        the vendor's form data (name, address, EIN, business type)
+      - Email the vendor a signing link
+      - Webhook handler at /api/webhooks/docuseal writes signed PDF to
+        Supabase Storage and sets vendor_documents.docuseal_submission_id
+        + signed_at
+      - Schema already has the column — no migration needed
+    Today's fallback: IRS link + manual upload flow on the portal page.
+
+
+[ ] TIN Match (IRS) on vendor submit
+    Status: Schema has tin_match_status column but no job to fill it.
+    Scope: integrate with an IRS TIN Match provider (track1099, 1099Pro API,
+    etc.) or use IRS e-Services (requires enrollment). Run as an Inngest
+    job after vendor submit. Flag mismatches so finance doesn't pay a bad
+    TIN and trigger 1099 backup withholding.
+
+
+[ ] Background check / vetting for security vendors
+    Status: Not discussed; placeholder idea.
+    Scope: For the 'security' service_category only, run a light BG-check
+    through Checkr or similar before marking vendor 'approved'.
+
+
+[ ] ACH payout rail (initiate payments from the app)
+    Status: Today we just COLLECT bank info. Sending ACH is out of scope.
+    Scope: integrate with Increase, Mercury, or a banking partner that
+    exposes ACH origination. Build a "pay vendor" action on the vendor
+    review page. This is where the real value-add kicks in — today
+    someone still runs the payment manually.
+

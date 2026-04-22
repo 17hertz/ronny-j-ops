@@ -4,7 +4,16 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
-export function SignOutButton() {
+export function SignOutButton({
+  redirectTo = "/login",
+}: {
+  /**
+   * Where to send the user after signing out. Defaults to the team login
+   * page; pass `/vendors/login` when this button is used in the vendor
+   * portal so they don't land on the wrong login screen.
+   */
+  redirectTo?: string;
+} = {}) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
 
@@ -12,7 +21,7 @@ export function SignOutButton() {
     setBusy(true);
     const supabase = createClient();
     await supabase.auth.signOut();
-    router.push("/login");
+    router.push(redirectTo);
     router.refresh();
   }
 

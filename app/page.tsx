@@ -31,9 +31,9 @@ export default function Home() {
           className="rounded-lg border border-neutral-800 bg-neutral-950 p-6 transition hover:border-brand"
         >
           <div className="text-sm text-neutral-500">Vendors</div>
-          <div className="mt-2 font-display text-2xl">Intake form</div>
+          <div className="mt-2 font-display text-2xl">Get paid</div>
           <div className="mt-3 text-sm text-neutral-400">
-            W9 + invoice upload portal
+            W9 + ACH intake for 17 Hertz payouts
           </div>
         </Link>
 

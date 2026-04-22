@@ -5,8 +5,13 @@ type CookieToSet = { name: string; value: string; options: CookieOptions };
 
 /**
  * Refreshes the Supabase session cookie on every request so the user stays
- * logged in, and gates `/dashboard` behind auth. Vendor portal routes
- * (`/vendors/*`) are intentionally public: vendors do not log in.
+ * logged in, and gates authenticated routes behind auth.
+ *
+ * Public:    /, /vendors/new, /vendors/portal/:token (token-gated),
+ *            /vendors/login, /login, /privacy, /terms, api webhooks
+ * Auth'd:    /dashboard/*       (team members only — enforced at page too)
+ *            /vendors/account/* (logged-in vendor only — page also checks
+ *                                 auth_user_id match on the vendors row)
  */
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -36,10 +41,19 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const isDashboard = request.nextUrl.pathname.startsWith("/dashboard");
+  const path = request.nextUrl.pathname;
+  const isDashboard = path.startsWith("/dashboard");
+  const isVendorAccount = path.startsWith("/vendors/account");
+
   if (isDashboard && !user) {
     const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("next", request.nextUrl.pathname);
+    loginUrl.searchParams.set("next", path);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  if (isVendorAccount && !user) {
+    // Vendors go to /vendors/login (not /login — that's the team page).
+    const loginUrl = new URL("/vendors/login", request.url);
     return NextResponse.redirect(loginUrl);
   }
 

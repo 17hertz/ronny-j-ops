@@ -49,6 +49,15 @@ const serverSchema = z.object({
 
   // Shared secret
   WEBHOOK_SECRET: z.string().min(16),
+
+  // 32-byte symmetric key for encrypting vendor PII (EIN, ACH details).
+  // Provide as 64-char hex or 44-char base64. Rotating this invalidates
+  // every existing encrypted column — migrate rows first.
+  ENCRYPTION_KEY: z
+    .string()
+    .refine((v) => /^[0-9a-fA-F]{64}$/.test(v) || v.length >= 43, {
+      message: "ENCRYPTION_KEY must be 64-char hex or base64-encoded 32 bytes",
+    }),
 });
 
 const clientSchema = serverSchema.pick({

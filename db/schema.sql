@@ -238,6 +238,31 @@ create type public.vendor_status as enum (
 create type public.vendor_type as enum (
   'individual','sole_prop','llc','s_corp','c_corp','partnership','other'
 );
+-- What service the vendor provides. Drives reporting + reminder routing
+-- (a security vendor's "gig reminder" reads differently than a photographer's).
+create type public.vendor_service_category as enum (
+  'security',
+  'photography',
+  'video_equipment',
+  'rentals',
+  'cars',
+  'yachts',
+  'deposits',
+  'stream_engineer',
+  'video_editor',
+  'graphic_designer',
+  'sponsorship',
+  'other'
+);
+-- How 17 Hertz pays the vendor.
+-- ACH is the PRIMARY rail and is required for every approved vendor so we
+-- can run payroll-style batch payouts. Zelle / PayPal / Venmo are optional
+-- secondary rails captured for fast one-off payments (deposits, tips, etc).
+-- Full account/routing lives in vendors.ach_bank_details_encrypted
+-- (pgsodium-encrypted); only the last4 is stored in cleartext.
+create type public.vendor_payment_method as enum (
+  'ach','paypal','venmo','zelle','other'
+);
 
 create table public.vendors (
   id uuid primary key default uuid_generate_v4(),
@@ -253,12 +278,31 @@ create table public.vendors (
   state text,
   postal_code text,
   country text default 'US',
+  -- What service this vendor provides. Required so Jason/Ronny can route
+  -- reminders, filter the review queue, and slice 1099 reporting.
+  service_category public.vendor_service_category,
+  service_notes text,              -- free-form "what you actually do"
   -- W9 fields. tax_id_last4 is safe to store; full is ENCRYPTED via pgsodium.
   tax_id_last4 text,
   tax_id_encrypted bytea,     -- pgsodium-encrypted EIN/SSN
   -- IRS TIN Match result
   tin_match_status text check (tin_match_status in ('pending','match','mismatch','error')),
   tin_match_checked_at timestamptz,
+  -- ---------------------------------------------------------------
+  -- Payment rails
+  -- ACH is required. Full routing + account JSON is encrypted at rest
+  -- (pgsodium) — same pattern as tax_id. Only last4s are stored plaintext
+  -- so we can display "...1234" in the dashboard without a decrypt round-trip.
+  ach_account_holder_name text,
+  ach_routing_last4 text,
+  ach_account_last4 text,
+  ach_account_type text check (ach_account_type in ('checking','savings')),
+  ach_bank_name text,
+  ach_bank_details_encrypted bytea,
+  -- Optional secondary rail for fast one-off payouts. Nullable — vendors
+  -- can skip this; ACH alone is sufficient to be approved.
+  secondary_payment_method public.vendor_payment_method,
+  secondary_payment_handle text,     -- e.g. "ronny@example.com", "@ronnyj", "+15551234567"
   status public.vendor_status not null default 'invited',
   submitted_at timestamptz,
   reviewed_by uuid references public.team_members(id) on delete set null,

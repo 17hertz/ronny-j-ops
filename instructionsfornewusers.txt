@@ -1,0 +1,45 @@
+==========================================================================
+Adding a new user to Ronny J Ops
+==========================================================================
+
+Two-step process. You do step 1 in the Supabase dashboard UI; step 2 is a
+SQL query in the Supabase SQL editor. Both must happen before the new
+person can see the dashboard or review vendors — without the
+team_members row, they'll just hit the "You're signed in, but not set
+up yet" screen.
+
+--------------------------------------------------------------------------
+EXAMPLE: To add Ronny
+--------------------------------------------------------------------------
+
+1. Authentication → Users → Invite user → `ronny@whatever.com`.
+   He gets a magic link email.
+
+2. Once he accepts, run in the SQL editor:
+
+   insert into public.team_members (auth_user_id, full_name, email, role)
+   select id, 'Ronny J', email, 'admin'
+   from auth.users where email = 'ronny@whatever.com';
+
+--------------------------------------------------------------------------
+Role options (the `role` column at the end of the INSERT)
+--------------------------------------------------------------------------
+
+  owner     - Full control. That's Jason. Usually only one.
+  admin     - Can do everything owner can except (future) billing.
+  operator  - Day-to-day ops. Approve/reject vendors, manage calendar.
+  readonly  - View dashboard but no writes.
+
+Right now the approve/reject routes don't distinguish between roles —
+any team_members row can approve. If that changes later, readonly will
+actually start meaning "readonly."
+
+--------------------------------------------------------------------------
+Removing someone
+--------------------------------------------------------------------------
+
+  delete from public.team_members where email = 'former-person@example.com';
+
+This just unlinks them from the team — their auth account still exists.
+To fully revoke access, also go to Authentication → Users in the Supabase
+dashboard and delete the auth user there.
