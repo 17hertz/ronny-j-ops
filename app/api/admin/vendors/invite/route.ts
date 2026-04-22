@@ -190,7 +190,12 @@ export async function POST(req: Request) {
 // a personal note. Written to read like something a larger label's
 // business-affairs team would send — professional, clear about the "why",
 // and subtly signals this is worth filling out because more work is coming.
-export const DEFAULT_GREETING =
+//
+// NOTE: can't be `export`ed — Next.js App Router route files only allow
+// specific named exports (GET, POST, runtime, dynamic, etc.) and the build
+// rejects anything else. The client-side invite-form.tsx keeps its own
+// copy under DEFAULT_GREETING_PREVIEW; if you edit one, edit the other.
+const DEFAULT_GREETING =
   "Thanks for working with Ronny J. 17 Hertz Inc. manages vendor onboarding and payments on Ronny's behalf — we'd like to get your info on file so we can pay you promptly on this and any future projects.";
 
 function inviteText(opts: {
