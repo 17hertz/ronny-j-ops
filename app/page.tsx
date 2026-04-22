@@ -38,7 +38,7 @@ export default function Home() {
         </Link>
 
         <a
-          href="https://github.com/ronnyjlistenup/ronny-j-ops"
+          href="https://github.com/17hertz/ronny-j-ops"
           className="rounded-lg border border-neutral-800 bg-neutral-950 p-6 transition hover:border-brand"
         >
           <div className="text-sm text-neutral-500">Build</div>
