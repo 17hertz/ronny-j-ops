@@ -29,6 +29,15 @@ const serverSchema = z.object({
   RESEND_API_KEY: z.string().startsWith("re_"),
   RESEND_FROM_EMAIL: z.string().email(),
   RESEND_FROM_NAME: z.string().default("Ronny J Ops"),
+  // Replies to the From address bounce into Resend's logs; set this to a
+  // real mailbox so a human sees them (e.g. a client texting "running late").
+  RESEND_REPLY_TO: z.string().email().optional(),
+
+  // Feature flags — SMS stays off until A2P 10DLC registration clears.
+  SMS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === "true"),
 
   // Google
   GOOGLE_CLIENT_ID: z.string().optional(),

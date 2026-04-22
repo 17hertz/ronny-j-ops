@@ -33,6 +33,10 @@ import {
   toTaskRow,
   TasksScopeMissingError,
 } from "@/lib/google/tasks";
+import {
+  scheduleRemindersForEvent,
+  cancelRemindersForEvent,
+} from "@/lib/reminders/schedule";
 
 // Google access tokens are valid for 1 hour; refresh early to avoid
 // racing a token expiry mid-sync.
@@ -182,16 +186,53 @@ async function syncOneAccount(
   }
 
   if (activeRows.length > 0) {
-    const { error: upsertErr } = await (admin as any)
+    // Upsert and ask PostgREST to return the ids so we can schedule
+    // reminders for each one without a follow-up SELECT round-trip.
+    const { data: upsertedRows, error: upsertErr } = (await (admin as any)
       .from("events")
       .upsert(activeRows, {
         onConflict: "google_calendar_id,google_event_id",
-      });
+      })
+      .select("id")) as {
+      data: Array<{ id: string }> | null;
+      error: { message: string } | null;
+    };
     if (upsertErr) throw new Error(`events upsert failed: ${upsertErr.message}`);
     upserted = activeRows.length;
+
+    // Schedule reminders for every attendee already attached to each event.
+    // No-op for events with no attendees — calendar sync alone doesn't
+    // create attendees; the intake portal / manual attach does.
+    for (const row of upsertedRows ?? []) {
+      try {
+        await scheduleRemindersForEvent(row.id);
+      } catch (err) {
+        // A reminder scheduling hiccup shouldn't fail the whole sync —
+        // worst case the cron will re-schedule on the next pass.
+        console.error("[sync] scheduleReminders failed", row.id, err);
+      }
+    }
   }
 
   if (cancelledEventIds.length > 0) {
+    // Look up local event ids first so we can cancel their reminders
+    // before the rows get FK-deleted.
+    const { data: toDelete } = (await (admin as any)
+      .from("events")
+      .select("id")
+      .eq("google_calendar_id", calendarId)
+      .in("google_event_id", cancelledEventIds)) as {
+      data: Array<{ id: string }> | null;
+    };
+
+    for (const row of toDelete ?? []) {
+      try {
+        await cancelRemindersForEvent(row.id);
+      } catch (err) {
+        console.error("[sync] cancelReminders failed", row.id, err);
+      }
+    }
+
     const { error: delErr, count } = await (admin as any)
       .from("events")
       .delete({ count: "exact" })

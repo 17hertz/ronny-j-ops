@@ -131,6 +131,51 @@ export default async function DashboardPage() {
       | null;
   };
 
+  // Reminders queue — scheduled sends in the next 7 days. Shows what the
+  // engine will fire and when, so Jason can sanity-check scheduling.
+  // Admin client bypasses RLS for this read — reminders don't have a direct
+  // team_member_id column so we can't scope via RLS easily yet.
+  const { data: queuedReminders } = (await supabase
+    .from("reminders")
+    .select(
+      "id, send_at, offset_minutes, status, event:events(title), contact:contacts(full_name)"
+    )
+    .eq("status", "scheduled")
+    .gte("send_at", now.toISOString())
+    .lte("send_at", weekEnd.toISOString())
+    .order("send_at", { ascending: true })
+    .limit(10)) as {
+    data:
+      | Array<{
+          id: string;
+          send_at: string;
+          offset_minutes: number;
+          status: string;
+          event: { title: string } | null;
+          contact: { full_name: string } | null;
+        }>
+      | null;
+  };
+
+  // Recent dispatches — the "sent" log. Useful to see deliverability at a
+  // glance (bounces, opt-outs, actual sends).
+  const { data: recentDispatches } = (await supabase
+    .from("reminder_dispatches")
+    .select("id, channel, status, error, sent_at, created_at")
+    .order("created_at", { ascending: false })
+    .limit(10)) as {
+    data:
+      | Array<{
+          id: string;
+          channel: string;
+          status: string;
+          error: string | null;
+          sent_at: string | null;
+          created_at: string;
+        }>
+      | null;
+  };
+
   return (
     <main className="mx-auto max-w-5xl px-8 py-12">
       <header className="flex items-center justify-between">
@@ -280,10 +325,76 @@ export default async function DashboardPage() {
         </Panel>
 
         <Panel eyebrow="Reminders" title="Queue">
-          <p className="text-sm text-neutral-500">
-            The 24h / 1h reminder queue will surface here once the Inngest
-            engine is wired up.
-          </p>
+          {queuedReminders && queuedReminders.length > 0 ? (
+            <ul className="space-y-2">
+              {queuedReminders.map((r) => (
+                <li
+                  key={r.id}
+                  className="rounded-md border border-neutral-800 px-3 py-2 text-sm"
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="min-w-0 truncate font-medium text-neutral-100">
+                      {r.event?.title ?? "(event missing)"}
+                    </span>
+                    <span className="shrink-0 font-mono text-xs text-neutral-500">
+                      {formatSendAt(r.send_at)}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    {r.contact?.full_name ?? "(contact missing)"} ·{" "}
+                    {r.offset_minutes >= 1440 ? "24h" : "1h"} out
+                  </p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-neutral-500">
+              No reminders queued for the next 7 days. Reminders are scheduled
+              automatically when a contact is attached to a calendar event
+              (via the intake portal, coming soon).
+            </p>
+          )}
+        </Panel>
+
+        <Panel eyebrow="Reminders" title="Recent sends">
+          {recentDispatches && recentDispatches.length > 0 ? (
+            <ul className="space-y-2">
+              {recentDispatches.map((d) => (
+                <li
+                  key={d.id}
+                  className="rounded-md border border-neutral-800 px-3 py-2 text-xs"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-mono uppercase tracking-wider text-neutral-400">
+                      {d.channel}
+                    </span>
+                    <span
+                      className={`font-mono ${
+                        d.status === "sent" || d.status === "delivered"
+                          ? "text-emerald-400"
+                          : d.status === "failed" || d.status === "bounced"
+                            ? "text-red-400"
+                            : "text-neutral-500"
+                      }`}
+                    >
+                      {d.status}
+                    </span>
+                    <span className="text-neutral-600">
+                      {formatRelative(d.sent_at ?? d.created_at)}
+                    </span>
+                  </div>
+                  {d.error && (
+                    <p className="mt-1 truncate text-red-400">{d.error}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-neutral-500">
+              No reminders have been sent yet. Once attendees are attached to
+              sessions, 24h and 1h reminders will show up here.
+            </p>
+          )}
         </Panel>
       </div>
 
@@ -374,6 +485,32 @@ function formatEventWindow(
       timeZone: timezone || "America/New_York",
     });
   return `${fmt(start)} – ${fmt(end)}`;
+}
+
+/**
+ * Compact "in Xh" / "tomorrow 3pm" style for reminder send times.
+ */
+function formatSendAt(iso: string): string {
+  const d = new Date(iso);
+  const diffMin = Math.round((d.getTime() - Date.now()) / 60000);
+  if (diffMin < 60) return `in ${Math.max(1, diffMin)}m`;
+  if (diffMin < 60 * 24) return `in ${Math.round(diffMin / 60)}h`;
+  return d.toLocaleDateString("en-US", {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * "3m ago" / "2h ago" / date — for the recent-dispatches log.
+ */
+function formatRelative(iso: string): string {
+  const d = new Date(iso);
+  const ago = Math.round((Date.now() - d.getTime()) / 60000);
+  if (ago < 60) return `${Math.max(1, ago)}m ago`;
+  if (ago < 60 * 24) return `${Math.round(ago / 60)}h ago`;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function Panel({
