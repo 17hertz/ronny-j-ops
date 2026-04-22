@@ -18,11 +18,16 @@ export default async function DashboardPage() {
   // Look up the team_members row so we know who this auth user actually is
   // (and their role). If they signed in but were never invited, show a
   // friendly "you're not on the team yet" screen instead of crashing.
-  const { data: teamMember } = await supabase
+  //
+  // The `as` cast is pending real supabase types — see note in
+  // app/api/google/callback/route.ts.
+  const { data: teamMember } = (await supabase
     .from("team_members")
     .select("id, full_name, role")
     .eq("auth_user_id", user.id)
-    .maybeSingle();
+    .maybeSingle()) as {
+    data: { id: string; full_name: string; role: string } | null;
+  };
 
   if (!teamMember) {
     return (
@@ -46,11 +51,21 @@ export default async function DashboardPage() {
   }
 
   // Google accounts this member has connected (if any).
-  const { data: googleAccounts } = await supabase
+  const { data: googleAccounts } = (await supabase
     .from("google_calendar_accounts")
     .select("id, google_email, scope, token_expires_at, updated_at")
     .eq("team_member_id", teamMember.id)
-    .order("updated_at", { ascending: false });
+    .order("updated_at", { ascending: false })) as {
+    data:
+      | Array<{
+          id: string;
+          google_email: string;
+          scope: string;
+          token_expires_at: string;
+          updated_at: string;
+        }>
+      | null;
+  };
 
   return (
     <main className="mx-auto max-w-5xl px-8 py-12">

@@ -52,11 +52,15 @@ export async function GET(request: Request) {
   if (!user) return NextResponse.redirect(new URL("/login", site));
 
   // Map auth_user_id -> team_members.id
-  const { data: member } = await sb
+  //
+  // The `as` cast is intentional until `types/supabase.ts` is regenerated
+  // from the live schema. The stub Database type collapses Row to `never`,
+  // so accessing `member.id` would otherwise fail typecheck.
+  const { data: member } = (await sb
     .from("team_members")
     .select("id")
     .eq("auth_user_id", user.id)
-    .maybeSingle();
+    .maybeSingle()) as { data: { id: string } | null };
   if (!member) return dash("not_team_member");
 
   let tokens;
