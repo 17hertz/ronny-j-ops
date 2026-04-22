@@ -52,3 +52,11 @@ end $$;
 
 grant select, insert, update, delete
   on public.vendor_invites to authenticated;
+
+-- service_role is used by lib/supabase/admin (createAdminClient) from our
+-- API routes. The blanket "grant all on all tables to service_role" in
+-- db/schema.sql was a one-time grant — it only covers tables that existed
+-- at the moment it ran, so every new table needs its own explicit grant
+-- here. Without this the admin client gets Postgres 42501
+-- "permission denied for table vendor_invites".
+grant all on public.vendor_invites to service_role;
