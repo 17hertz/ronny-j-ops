@@ -371,6 +371,13 @@ alter table public.agent_messages          enable row level security;
 
 -- ---- team_members ------------------------------------------------------
 -- A logged-in team member sees all team members (small org); only admin writes.
+-- The "own row read" policy breaks a chicken-and-egg problem: the "team read"
+-- policy calls is_team_member(), which queries team_members — so on a cold
+-- fetch the user would never be able to see their own row even though
+-- the helper is security definer. This direct-match policy lets the
+-- dashboard boot before is_team_member() has any data to check against.
+create policy "own row read" on public.team_members
+  for select using (auth_user_id = auth.uid());
 create policy "team read" on public.team_members
   for select using (public.is_team_member());
 create policy "admin write" on public.team_members
@@ -425,6 +432,47 @@ create policy "team agent msg read" on public.agent_messages
   for select using (public.is_team_member());
 create policy "team agent msg write" on public.agent_messages
   for all using (public.is_admin()) with check (public.is_admin());
+
+-- =========================================================================
+-- Grants
+-- =========================================================================
+-- RLS is the row-level filter, but Postgres GRANTs are the table-level gate
+-- that runs *before* RLS. Without these, `authenticated` sessions get
+-- "permission denied" even when a matching policy exists. `service_role`
+-- usually has these by default in Supabase, but applying the schema raw to
+-- a fresh project misses them — so we declare them explicitly.
+
+grant usage on schema public to authenticated, anon, service_role;
+
+-- service_role needs full access on everything (it's what server-side
+-- route handlers use to bypass RLS for system-managed tables).
+grant all on all tables    in schema public to service_role;
+grant all on all sequences in schema public to service_role;
+grant all on all routines  in schema public to service_role;
+
+-- authenticated users need table-level privileges; RLS still filters rows.
+grant select on public.team_members              to authenticated;
+grant select, insert, update, delete
+  on public.google_calendar_accounts             to authenticated;
+grant select, insert, update, delete
+  on public.contacts                             to authenticated;
+grant select, insert, update, delete
+  on public.tasks                                to authenticated;
+grant select, insert, update, delete
+  on public.events                               to authenticated;
+grant select, insert, update, delete
+  on public.event_attendees                      to authenticated;
+grant select, insert, update, delete
+  on public.reminders                            to authenticated;
+grant select, insert, update, delete
+  on public.reminder_dispatches                  to authenticated;
+grant select, insert, update, delete
+  on public.vendors                              to authenticated;
+grant select, insert, update, delete
+  on public.vendor_documents                     to authenticated;
+grant select on public.agent_sessions            to authenticated;
+grant select on public.agent_messages            to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
 
 -- =========================================================================
 -- Storage buckets (run in Supabase SQL editor — storage schema is magic)
