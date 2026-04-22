@@ -1,10 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
+
+type CookieToSet = { name: string; value: string; options: CookieOptions };
 
 /**
  * Refreshes the Supabase session cookie on every request so the user stays
  * logged in, and gates `/dashboard` behind auth. Vendor portal routes
- * (`/vendors/*`) are intentionally public — vendors don't log in.
+ * (`/vendors/*`) are intentionally public: vendors do not log in.
  */
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -17,7 +19,7 @@ export async function middleware(request: NextRequest) {
         getAll() {
           return request.cookies.getAll();
         },
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet: CookieToSet[]) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           );
@@ -46,7 +48,7 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Run on every path except Next.js internals + static assets + webhooks
+    // Run on every path except Next.js internals, static assets, and webhooks
     "/((?!_next/static|_next/image|favicon.ico|api/webhooks|api/inngest).*)",
   ],
 };
