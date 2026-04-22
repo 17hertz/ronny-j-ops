@@ -68,21 +68,20 @@ export default async function DashboardPage() {
       | null;
   };
 
-  // Today's events across every connected calendar. We bound both edges:
-  //   - starts_at < end-of-local-day  (event hasn't begun after today)
-  //   - ends_at   > start-of-local-day (event hasn't already finished)
-  // This correctly surfaces multi-hour / multi-day events that span today.
+  // Next 7 days of events across every connected calendar. Lower bound is
+  // "now" so we don't clutter the view with events that already ended; upper
+  // bound is end-of-day-7-days-out. Ordering is chronological so the render
+  // step can group by day in-order.
   const now = new Date();
-  const startOfDay = new Date(now);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(now);
-  endOfDay.setHours(23, 59, 59, 999);
+  const weekEnd = new Date(now);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  weekEnd.setHours(23, 59, 59, 999);
 
-  const { data: todayEvents } = (await supabase
+  const { data: upcomingEvents } = (await supabase
     .from("events")
     .select("id, title, location, starts_at, ends_at, timezone")
-    .lte("starts_at", endOfDay.toISOString())
-    .gte("ends_at", startOfDay.toISOString())
+    .gte("ends_at", now.toISOString())
+    .lte("starts_at", weekEnd.toISOString())
     .order("starts_at", { ascending: true })) as {
     data:
       | Array<{
@@ -95,6 +94,22 @@ export default async function DashboardPage() {
         }>
       | null;
   };
+
+  // Group by local calendar date so each day becomes its own sub-list.
+  // We key on ISO YYYY-MM-DD in the event's own timezone when available,
+  // otherwise America/New_York — this avoids events shifting across the
+  // midnight boundary because the server rendered them in UTC.
+  const eventsByDay = new Map<
+    string,
+    NonNullable<typeof upcomingEvents>[number][]
+  >();
+  for (const ev of upcomingEvents ?? []) {
+    const key = localDateKey(ev.starts_at, ev.timezone);
+    const list = eventsByDay.get(key) ?? [];
+    list.push(ev);
+    eventsByDay.set(key, list);
+  }
+  const eventDayKeys = Array.from(eventsByDay.keys());
 
   // Open Google Tasks for this user — due soon or overdue, status=needsAction.
   // Capped at 10 so the panel doesn't blow up on heavy backlogs.
@@ -189,35 +204,48 @@ export default async function DashboardPage() {
           )}
         </Panel>
 
-        <Panel eyebrow="Up next" title="Today">
-          {todayEvents && todayEvents.length > 0 ? (
-            <ul className="space-y-2">
-              {todayEvents.map((ev) => (
-                <li
-                  key={ev.id}
-                  className="rounded-md border border-neutral-800 px-3 py-2 text-sm"
-                >
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="font-medium text-neutral-100">
-                      {ev.title}
-                    </span>
-                    <span className="font-mono text-xs text-neutral-500">
-                      {formatEventWindow(ev.starts_at, ev.ends_at, ev.timezone)}
-                    </span>
-                  </div>
-                  {ev.location && (
-                    <p className="mt-1 text-xs text-neutral-500">
-                      {ev.location}
-                    </p>
-                  )}
-                </li>
+        <Panel eyebrow="Up next" title="Next 7 days">
+          {eventDayKeys.length > 0 ? (
+            <div className="space-y-4">
+              {eventDayKeys.map((dayKey) => (
+                <div key={dayKey}>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-neutral-600">
+                    {formatDayHeader(dayKey)}
+                  </p>
+                  <ul className="mt-2 space-y-2">
+                    {eventsByDay.get(dayKey)!.map((ev) => (
+                      <li
+                        key={ev.id}
+                        className="rounded-md border border-neutral-800 px-3 py-2 text-sm"
+                      >
+                        <div className="flex items-baseline justify-between gap-3">
+                          <span className="font-medium text-neutral-100">
+                            {ev.title}
+                          </span>
+                          <span className="font-mono text-xs text-neutral-500">
+                            {formatEventWindow(
+                              ev.starts_at,
+                              ev.ends_at,
+                              ev.timezone
+                            )}
+                          </span>
+                        </div>
+                        {ev.location && (
+                          <p className="mt-1 text-xs text-neutral-500">
+                            {ev.location}
+                          </p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ))}
-            </ul>
+            </div>
           ) : (
             <p className="text-sm text-neutral-500">
               {googleAccounts && googleAccounts.length > 0
-                ? "Nothing on the calendar for today. Click Sync now in the Calendar panel to pull in the latest."
-                : "Connect a Google Calendar and today's events will appear here."}
+                ? "Nothing on the calendar for the next 7 days."
+                : "Connect a Google Calendar and upcoming events will appear here."}
             </p>
           )}
         </Panel>
@@ -259,6 +287,45 @@ export default async function DashboardPage() {
       </p>
     </main>
   );
+}
+
+/**
+ * Produce an ISO-ish day key ("YYYY-MM-DD") for grouping events, using the
+ * event's own timezone so an 11pm LA event doesn't get bucketed into
+ * "tomorrow" relative to the server's UTC clock. Falls back to Eastern
+ * (our default ops timezone) when the event has no zone attached.
+ */
+function localDateKey(isoTimestamp: string, timezone: string | null): string {
+  const tz = timezone || "America/New_York";
+  // `en-CA` yields YYYY-MM-DD which is conveniently sortable.
+  return new Date(isoTimestamp).toLocaleDateString("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
+/**
+ * Human-readable header for a day group: "Today", "Tomorrow", or
+ * "Thu, Apr 24" style. Input is the YYYY-MM-DD key produced above.
+ */
+function formatDayHeader(dayKey: string): string {
+  // Parse the key as a date in the *viewer's* local zone so the "Today" /
+  // "Tomorrow" labels match what the user expects to see on their wall clock.
+  const [y, m, d] = dayKey.split("-").map(Number);
+  const day = new Date(y, m - 1, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const diff = Math.round((day.getTime() - today.getTime()) / msPerDay);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  return day.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 /**
