@@ -329,6 +329,35 @@ create trigger gcal_touch before update on public.google_calendar_accounts
   for each row execute function public.touch_updated_at();
 
 -- -------------------------------------------------------------------------
+-- google_tasks
+-- Read-only mirror of Google Tasks for each connected Google account.
+-- This is separate from public.tasks (which is the team-ops task board)
+-- so personal todos don't bleed into the shared workflow.
+-- -------------------------------------------------------------------------
+create table public.google_tasks (
+  id uuid primary key default uuid_generate_v4(),
+  team_member_id uuid not null references public.team_members(id) on delete cascade,
+  google_account_id uuid not null references public.google_calendar_accounts(id) on delete cascade,
+  google_tasklist_id text not null,
+  google_task_id text not null,
+  title text not null,
+  notes text,
+  status text not null,                 -- 'needsAction' | 'completed'
+  due_at timestamptz,
+  completed_at timestamptz,
+  parent_task_id text,                  -- Google's parent (for subtasks)
+  position text,                        -- Google's lexicographic sort key
+  etag text,
+  remote_updated_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (google_account_id, google_tasklist_id, google_task_id)
+);
+create index on public.google_tasks (team_member_id, status, due_at);
+create trigger gtasks_touch before update on public.google_tasks
+  for each row execute function public.touch_updated_at();
+
+-- -------------------------------------------------------------------------
 -- agent_sessions / agent_messages
 -- Trace log for the Claude Agent SDK interactions so the team can see why
 -- the agent took an action.
@@ -366,6 +395,7 @@ alter table public.reminder_dispatches     enable row level security;
 alter table public.vendors                 enable row level security;
 alter table public.vendor_documents        enable row level security;
 alter table public.google_calendar_accounts enable row level security;
+alter table public.google_tasks            enable row level security;
 alter table public.agent_sessions          enable row level security;
 alter table public.agent_messages          enable row level security;
 
@@ -423,6 +453,21 @@ create policy "own calendar tokens" on public.google_calendar_accounts
     or public.is_admin()
   );
 
+-- ---- google_tasks ------------------------------------------------------
+-- Each user sees only the Google Tasks mirrored from their own account.
+create policy "own google tasks" on public.google_tasks
+  for all using (
+    team_member_id in (
+      select id from public.team_members where auth_user_id = auth.uid()
+    )
+    or public.is_admin()
+  ) with check (
+    team_member_id in (
+      select id from public.team_members where auth_user_id = auth.uid()
+    )
+    or public.is_admin()
+  );
+
 -- ---- agent sessions/messages ------------------------------------------
 create policy "team agent read" on public.agent_sessions
   for select using (public.is_team_member());
@@ -454,6 +499,7 @@ grant all on all routines  in schema public to service_role;
 grant select on public.team_members              to authenticated;
 grant select, insert, update, delete
   on public.google_calendar_accounts             to authenticated;
+grant select on public.google_tasks              to authenticated;
 grant select, insert, update, delete
   on public.contacts                             to authenticated;
 grant select, insert, update, delete

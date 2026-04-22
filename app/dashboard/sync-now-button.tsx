@@ -33,14 +33,19 @@ export function SyncNowButton() {
         googleEmail: string;
         upserted: number;
         deleted: number;
+        tasks?: { upserted: number; deleted: number; scopeMissing: boolean };
       }>;
-      const totalUpserted = results.reduce((s, r) => s + r.upserted, 0);
-      const totalDeleted = results.reduce((s, r) => s + r.deleted, 0);
+      const totalEvents = results.reduce((s, r) => s + r.upserted, 0);
+      const totalTasks = results.reduce(
+        (s, r) => s + (r.tasks?.upserted ?? 0),
+        0
+      );
+      const anyScopeMissing = results.some((r) => r.tasks?.scopeMissing);
       setStatus({
         kind: "ok",
-        summary: `Synced ${totalUpserted} event${totalUpserted === 1 ? "" : "s"}${
-          totalDeleted ? `, removed ${totalDeleted}` : ""
-        }.`,
+        summary: anyScopeMissing
+          ? `Synced ${totalEvents} events. Reconnect Google to enable Tasks sync.`
+          : `Synced ${totalEvents} events + ${totalTasks} tasks.`,
       });
       router.refresh();
     } catch (e: any) {

@@ -1,5 +1,5 @@
 /**
- * Google Calendar sync orchestrator.
+ * Google sync orchestrator (Calendar events + Tasks).
  *
  * Called by:
  *   - POST /api/google/sync   (user-triggered, scoped to one team_member)
@@ -7,14 +7,17 @@
  *
  * Per-account flow:
  *   1. Refresh the access token if it's expired.
- *   2. Pull events with `listEvents` — incremental if we have a sync token,
- *      full otherwise. On 410 Gone, wipe the token and retry.
- *   3. For each event, either upsert the row (active) or delete it
- *      (status=cancelled).
+ *   2. Calendar: pull events with `listEvents` — incremental if we have a
+ *      sync token, full otherwise. On 410 Gone, wipe the token and retry.
+ *      Upsert active events; delete cancelled.
+ *   3. Tasks (best effort): list every tasklist, pull tasks updated since
+ *      our last remote timestamp, mirror into `google_tasks`.
+ *      Tolerates missing scope — existing connections made before we added
+ *      tasks.readonly won't have it; we skip and surface a reconnect hint.
  *   4. Save the new sync token back.
  *
- * We use the service-role client here because the `events` table has
- * per-team-member RLS but this function may be invoked out-of-band
+ * We use the service-role client here because the `events` / `google_tasks`
+ * tables have per-team-member RLS but this function may be invoked out-of-band
  * (scheduled, not user-initiated). Identity is established by the caller.
  */
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -24,6 +27,12 @@ import {
   toEventRow,
   SyncTokenInvalidError,
 } from "@/lib/google/calendar";
+import {
+  listTaskLists,
+  listTasks,
+  toTaskRow,
+  TasksScopeMissingError,
+} from "@/lib/google/tasks";
 
 // Google access tokens are valid for 1 hour; refresh early to avoid
 // racing a token expiry mid-sync.
@@ -39,6 +48,11 @@ export type SyncResult = {
   upserted: number;
   deleted: number;
   fullResync: boolean;
+  tasks: {
+    upserted: number;
+    deleted: number;
+    scopeMissing: boolean;
+  };
 };
 
 export async function syncAccountsForMember(
@@ -71,7 +85,7 @@ export async function syncAccountsForMember(
 
   const results: SyncResult[] = [];
   for (const acct of accounts) {
-    results.push(await syncOneAccount(admin, acct));
+    results.push(await syncOneAccount(admin, acct, teamMemberId));
   }
   return results;
 }
@@ -87,7 +101,8 @@ type AccountRow = {
 
 async function syncOneAccount(
   admin: ReturnType<typeof createAdminClient>,
-  acct: AccountRow
+  acct: AccountRow,
+  teamMemberId: string
 ): Promise<SyncResult> {
   // The Google "primary" calendar ID resolves to the user's main cal.
   // Later we can discover additional calendars via /users/me/calendarList.
@@ -197,11 +212,110 @@ async function syncOneAccount(
       .eq("id", acct.id);
   }
 
+  // Step 5: Google Tasks (best effort; don't let tasks failure kill calendar).
+  const tasksResult = await syncTasksForAccount({
+    admin,
+    accessToken,
+    teamMemberId,
+    googleAccountId: acct.id,
+  });
+
   return {
     googleEmail: acct.google_email,
     calendarId,
     upserted,
     deleted,
     fullResync,
+    tasks: tasksResult,
   };
+}
+
+/**
+ * Mirror every tasklist for this Google account into `google_tasks`.
+ * Returns counts + `scopeMissing` flag when the token lacks tasks.readonly
+ * (i.e. connected before we added the scope — user needs to reconnect).
+ */
+async function syncTasksForAccount(opts: {
+  admin: ReturnType<typeof createAdminClient>;
+  accessToken: string;
+  teamMemberId: string;
+  googleAccountId: string;
+}): Promise<{ upserted: number; deleted: number; scopeMissing: boolean }> {
+  const { admin, accessToken, teamMemberId, googleAccountId } = opts;
+
+  let lists;
+  try {
+    lists = await listTaskLists(accessToken);
+  } catch (err) {
+    if (err instanceof TasksScopeMissingError) {
+      return { upserted: 0, deleted: 0, scopeMissing: true };
+    }
+    throw err;
+  }
+
+  // Incremental bound: pull only tasks updated since the newest row we have
+  // for this account. On first run there are no rows, so we pull everything
+  // (the task API doesn't impose a hard page cap, but active Tasks lists
+  // rarely exceed a few hundred rows per user).
+  const { data: lastRow } = (await (admin as any)
+    .from("google_tasks")
+    .select("remote_updated_at")
+    .eq("google_account_id", googleAccountId)
+    .order("remote_updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()) as { data: { remote_updated_at: string | null } | null };
+  const updatedMin = lastRow?.remote_updated_at ?? undefined;
+
+  let upserted = 0;
+  let deleted = 0;
+
+  for (const list of lists) {
+    const gtasks = await listTasks({
+      accessToken,
+      tasklistId: list.id,
+      updatedMin,
+    });
+
+    const rows: Array<NonNullable<ReturnType<typeof toTaskRow>>> = [];
+    const deletedTaskIds: string[] = [];
+    for (const gt of gtasks) {
+      if (gt.deleted) {
+        deletedTaskIds.push(gt.id);
+        continue;
+      }
+      const row = toTaskRow(gt, {
+        teamMemberId,
+        googleAccountId,
+        tasklistId: list.id,
+      });
+      if (row) rows.push(row);
+    }
+
+    if (rows.length > 0) {
+      const { error: upsertErr } = await (admin as any)
+        .from("google_tasks")
+        .upsert(rows, {
+          onConflict: "google_account_id,google_tasklist_id,google_task_id",
+        });
+      if (upsertErr) {
+        throw new Error(`google_tasks upsert failed: ${upsertErr.message}`);
+      }
+      upserted += rows.length;
+    }
+
+    if (deletedTaskIds.length > 0) {
+      const { error: delErr, count } = await (admin as any)
+        .from("google_tasks")
+        .delete({ count: "exact" })
+        .eq("google_account_id", googleAccountId)
+        .eq("google_tasklist_id", list.id)
+        .in("google_task_id", deletedTaskIds);
+      if (delErr) {
+        throw new Error(`google_tasks delete failed: ${delErr.message}`);
+      }
+      deleted += count ?? deletedTaskIds.length;
+    }
+  }
+
+  return { upserted, deleted, scopeMissing: false };
 }

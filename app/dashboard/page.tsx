@@ -96,6 +96,25 @@ export default async function DashboardPage() {
       | null;
   };
 
+  // Open Google Tasks for this user — due soon or overdue, status=needsAction.
+  // Capped at 10 so the panel doesn't blow up on heavy backlogs.
+  const { data: openTasks } = (await supabase
+    .from("google_tasks")
+    .select("id, title, due_at, status")
+    .eq("team_member_id", teamMember.id)
+    .eq("status", "needsAction")
+    .order("due_at", { ascending: true, nullsFirst: false })
+    .limit(10)) as {
+    data:
+      | Array<{
+          id: string;
+          title: string;
+          due_at: string | null;
+          status: string;
+        }>
+      | null;
+  };
+
   return (
     <main className="mx-auto max-w-5xl px-8 py-12">
       <header className="flex items-center justify-between">
@@ -203,11 +222,28 @@ export default async function DashboardPage() {
           )}
         </Panel>
 
-        <Panel eyebrow="Tasks" title="Open items">
-          <p className="text-sm text-neutral-500">
-            The task list view is the next thing on deck after calendar sync
-            is working. Nothing to show yet.
-          </p>
+        <Panel eyebrow="Google Tasks" title="Open items">
+          {openTasks && openTasks.length > 0 ? (
+            <ul className="space-y-2">
+              {openTasks.map((t) => (
+                <li
+                  key={t.id}
+                  className="flex items-baseline justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2 text-sm"
+                >
+                  <span className="text-neutral-100">{t.title}</span>
+                  <span className="font-mono text-xs text-neutral-500">
+                    {formatTaskDue(t.due_at)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-neutral-500">
+              {googleAccounts && googleAccounts.length > 0
+                ? "No open Google Tasks. Click Sync now to pull the latest — if you connected before Tasks support shipped, you'll need to reconnect Google to grant the extra scope."
+                : "Connect a Google account and your Google Tasks will mirror here (read-only)."}
+            </p>
+          )}
         </Panel>
 
         <Panel eyebrow="Reminders" title="Queue">
@@ -223,6 +259,25 @@ export default async function DashboardPage() {
       </p>
     </main>
   );
+}
+
+/**
+ * Render a task's due date. Tasks without due dates are rendered as "—".
+ * Overdue tasks get a compact "past due" label rather than a calendar date
+ * so the panel communicates urgency at a glance.
+ */
+function formatTaskDue(dueAt: string | null): string {
+  if (!dueAt) return "—";
+  const due = new Date(dueAt);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const daysOut = Math.round((due.getTime() - today.getTime()) / msPerDay);
+  if (daysOut < 0) return "past due";
+  if (daysOut === 0) return "today";
+  if (daysOut === 1) return "tomorrow";
+  if (daysOut < 7) return `in ${daysOut}d`;
+  return due.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /**
