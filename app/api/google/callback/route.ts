@@ -89,9 +89,14 @@ export async function GET(request: Request) {
   // Write with service-role (bypasses RLS) since there's no user-scoped
   // policy that allows inserts into google_calendar_accounts. The user
   // identity check above is what secures this.
+  //
+  // The `as any` casts here are intentional until `types/supabase.ts` is
+  // regenerated from the live schema via `supabase gen types typescript`.
+  // The stub `Database` type collapses Insert/Update to `never` through the
+  // Record<string, any> lookup, which makes upsert unusable without a cast.
   const admin = createAdminClient();
-  const { error: upsertErr } = await admin
-    .from("google_calendar_accounts")
+  const { error: upsertErr } = await (admin
+    .from("google_calendar_accounts") as any)
     .upsert(
       {
         team_member_id: member.id,
