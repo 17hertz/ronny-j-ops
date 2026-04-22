@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "./sign-out-button";
+import { SyncNowButton } from "./sync-now-button";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +68,34 @@ export default async function DashboardPage() {
       | null;
   };
 
+  // Today's events across every connected calendar. We bound both edges:
+  //   - starts_at < end-of-local-day  (event hasn't begun after today)
+  //   - ends_at   > start-of-local-day (event hasn't already finished)
+  // This correctly surfaces multi-hour / multi-day events that span today.
+  const now = new Date();
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(now);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const { data: todayEvents } = (await supabase
+    .from("events")
+    .select("id, title, location, starts_at, ends_at, timezone")
+    .lte("starts_at", endOfDay.toISOString())
+    .gte("ends_at", startOfDay.toISOString())
+    .order("starts_at", { ascending: true })) as {
+    data:
+      | Array<{
+          id: string;
+          title: string;
+          location: string | null;
+          starts_at: string;
+          ends_at: string;
+          timezone: string;
+        }>
+      | null;
+  };
+
   return (
     <main className="mx-auto max-w-5xl px-8 py-12">
       <header className="flex items-center justify-between">
@@ -114,19 +143,24 @@ export default async function DashboardPage() {
           }
         >
           {googleAccounts && googleAccounts.length > 0 ? (
-            <ul className="space-y-2">
-              {googleAccounts.map((acct) => (
-                <li
-                  key={acct.id}
-                  className="flex items-center justify-between rounded-md border border-neutral-800 px-3 py-2 text-sm"
-                >
-                  <span className="text-neutral-200">{acct.google_email}</span>
-                  <span className="text-xs text-neutral-600">
-                    connected
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="space-y-2">
+                {googleAccounts.map((acct) => (
+                  <li
+                    key={acct.id}
+                    className="flex items-center justify-between rounded-md border border-neutral-800 px-3 py-2 text-sm"
+                  >
+                    <span className="text-neutral-200">{acct.google_email}</span>
+                    <span className="text-xs text-neutral-600">
+                      connected
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-4">
+                <SyncNowButton />
+              </div>
+            </>
           ) : (
             <p className="text-sm text-neutral-500">
               No calendars connected yet. Click <strong>Connect Google
@@ -137,10 +171,36 @@ export default async function DashboardPage() {
         </Panel>
 
         <Panel eyebrow="Up next" title="Today">
-          <p className="text-sm text-neutral-500">
-            Event sync is not live yet. Once you connect a Google account and
-            the sync job runs, today&apos;s schedule will appear here.
-          </p>
+          {todayEvents && todayEvents.length > 0 ? (
+            <ul className="space-y-2">
+              {todayEvents.map((ev) => (
+                <li
+                  key={ev.id}
+                  className="rounded-md border border-neutral-800 px-3 py-2 text-sm"
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="font-medium text-neutral-100">
+                      {ev.title}
+                    </span>
+                    <span className="font-mono text-xs text-neutral-500">
+                      {formatEventWindow(ev.starts_at, ev.ends_at, ev.timezone)}
+                    </span>
+                  </div>
+                  {ev.location && (
+                    <p className="mt-1 text-xs text-neutral-500">
+                      {ev.location}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-neutral-500">
+              {googleAccounts && googleAccounts.length > 0
+                ? "Nothing on the calendar for today. Click Sync now in the Calendar panel to pull in the latest."
+                : "Connect a Google Calendar and today's events will appear here."}
+            </p>
+          )}
         </Panel>
 
         <Panel eyebrow="Tasks" title="Open items">
@@ -163,6 +223,30 @@ export default async function DashboardPage() {
       </p>
     </main>
   );
+}
+
+/**
+ * Render "9:00–10:30 AM" style windows. Falls back to "all day" if the
+ * event spans a full calendar day (Google all-day events come in as 00:00
+ * to 00:00 the next day).
+ */
+function formatEventWindow(
+  startsAt: string,
+  endsAt: string,
+  timezone: string
+): string {
+  const start = new Date(startsAt);
+  const end = new Date(endsAt);
+  const durationMs = end.getTime() - start.getTime();
+  if (durationMs >= 23 * 60 * 60 * 1000) return "all day";
+
+  const fmt = (d: Date) =>
+    d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: timezone || "America/New_York",
+    });
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 function Panel({
