@@ -36,6 +36,22 @@ export default async function DashboardPage() {
   };
 
   if (!teamMember) {
+    // Before showing "not on the team", check if this auth user is actually a
+    // VENDOR who ended up here by accident — e.g. they used the generic
+    // /login magic link (which hardcodes ?next=/dashboard) rather than the
+    // vendor-specific entry at /vendors/login. Happens often enough that we
+    // just auto-route them instead of making them re-authenticate. The
+    // "vendor self read" RLS policy scopes this to their own row.
+    const { data: vendorSelf } = (await supabase
+      .from("vendors")
+      .select("id")
+      .eq("auth_user_id", user.id)
+      .maybeSingle()) as { data: { id: string } | null };
+
+    if (vendorSelf) {
+      redirect("/vendors/account");
+    }
+
     return (
       <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center px-8">
         <p className="font-mono text-xs uppercase tracking-[0.3em] text-brand">
@@ -176,6 +192,37 @@ export default async function DashboardPage() {
           error: string | null;
           sent_at: string | null;
           created_at: string;
+        }>
+      | null;
+  };
+
+  // Pending invoices — approved vendors have submitted invoices that need
+  // Jason/Ronny's eyes. Mirrors the vendor-review panel's pattern. Capped
+  // at 20 so the panel stays readable even during a busy week.
+  const { data: pendingInvoices } = (await supabase
+    .from("vendor_documents")
+    .select(
+      `
+      id,
+      invoice_number,
+      invoice_amount_cents,
+      invoice_status,
+      submitted_at,
+      vendor:vendors ( id, legal_name )
+      `
+    )
+    .eq("kind", "invoice")
+    .in("invoice_status", ["submitted", "under_review"])
+    .order("submitted_at", { ascending: false })
+    .limit(20)) as {
+    data:
+      | Array<{
+          id: string;
+          invoice_number: string | null;
+          invoice_amount_cents: number | null;
+          invoice_status: string | null;
+          submitted_at: string | null;
+          vendor: { id: string; legal_name: string } | null;
         }>
       | null;
   };
@@ -515,6 +562,58 @@ export default async function DashboardPage() {
             </p>
           )}
         </Panel>
+
+        <Panel
+          eyebrow="Invoices"
+          title="Pending invoices"
+          cta={
+            (pendingInvoices?.length ?? 0) > 0 ? (
+              <Link
+                href="/dashboard/invoices"
+                className="text-xs font-medium text-neutral-400 transition hover:text-brand"
+              >
+                View all
+              </Link>
+            ) : null
+          }
+        >
+          {!pendingInvoices || pendingInvoices.length === 0 ? (
+            <p className="text-sm text-neutral-500">
+              No invoices awaiting review.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {pendingInvoices.map((inv) => (
+                <li key={inv.id}>
+                  <Link
+                    href={`/dashboard/invoices/${inv.id}`}
+                    className="block rounded-md border border-neutral-800 bg-neutral-950 px-4 py-3 transition hover:border-neutral-700"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-neutral-100">
+                          {inv.vendor?.legal_name ?? "Unknown vendor"}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-neutral-500">
+                          Invoice {inv.invoice_number ?? "—"} ·{" "}
+                          {formatMoney(inv.invoice_amount_cents ?? 0)}
+                        </p>
+                        <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-neutral-600">
+                          {inv.submitted_at
+                            ? new Date(inv.submitted_at).toLocaleDateString()
+                            : "—"}
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-full border border-amber-900/60 bg-amber-950/40 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-amber-200">
+                        {(inv.invoice_status ?? "submitted").replace("_", " ")}
+                      </span>
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
       </div>
 
       <p className="mt-16 text-xs text-neutral-600">
@@ -657,4 +756,11 @@ function Panel({
       <div className="mt-4">{children}</div>
     </section>
   );
+}
+
+function formatMoney(cents: number): string {
+  return (cents / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+  });
 }

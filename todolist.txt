@@ -4,6 +4,23 @@ Items we've decided NOT to build right now, but want to revisit once the
 app is further along / revenue is coming in. Oldest items at the top.
 
 
+[ ] Rotate Supabase secrets before going live
+    Added: 2026-04-22
+    Reason: SUPABASE_SERVICE_ROLE_KEY and the password inside SUPABASE_DB_URL
+    were pasted into an assistant chat while debugging a 42501 permission
+    error. Chat history persists, so treat those values as compromised.
+    Steps:
+      1. Supabase dashboard -> Project Settings -> API Keys -> Reset
+         service_role key. Update SUPABASE_SERVICE_ROLE_KEY in .env.local
+         and in Vercel (Production, Preview, Development). Redeploy.
+      2. Supabase dashboard -> Project Settings -> Database -> Reset
+         database password. Update the embedded password inside
+         SUPABASE_DB_URL in .env.local (and Vercel if set there).
+      3. Restart npm run dev and smoke-test /dashboard + a vendor action
+         to confirm the new keys are wired up.
+    Must happen before the first real vendor (non-Jason) uses the site.
+
+
 [ ] Digital W9 signature (DocuSeal integration)
     Added: 2026-04-22
     Status: Deferred — don't want to incur $20/mo until app is finished.
