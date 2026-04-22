@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "./sign-out-button";
 import { SyncNowButton } from "./sync-now-button";
+import { TaskCheckbox } from "./task-checkbox";
 
 export const dynamic = "force-dynamic";
 
@@ -125,7 +126,7 @@ export default async function DashboardPage() {
           id: string;
           title: string;
           due_at: string | null;
-          status: string;
+          status: "needsAction" | "completed";
         }>
       | null;
   };
@@ -256,10 +257,14 @@ export default async function DashboardPage() {
               {openTasks.map((t) => (
                 <li
                   key={t.id}
-                  className="flex items-baseline justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2 text-sm"
+                  className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2 text-sm"
                 >
-                  <span className="text-neutral-100">{t.title}</span>
-                  <span className="font-mono text-xs text-neutral-500">
+                  <TaskCheckbox
+                    taskId={t.id}
+                    initialStatus={t.status}
+                    title={t.title}
+                  />
+                  <span className="shrink-0 font-mono text-xs text-neutral-500">
                     {formatTaskDue(t.due_at)}
                   </span>
                 </li>
@@ -268,8 +273,8 @@ export default async function DashboardPage() {
           ) : (
             <p className="text-sm text-neutral-500">
               {googleAccounts && googleAccounts.length > 0
-                ? "No open Google Tasks. Click Sync now to pull the latest — if you connected before Tasks support shipped, you'll need to reconnect Google to grant the extra scope."
-                : "Connect a Google account and your Google Tasks will mirror here (read-only)."}
+                ? "No open Google Tasks. Click Sync now to pull the latest — if you connected before the write scope was added, reconnect Google so check-offs can flow back to tasks.google.com."
+                : "Connect a Google account and your Google Tasks will mirror here."}
             </p>
           )}
         </Panel>

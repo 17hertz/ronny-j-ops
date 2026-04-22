@@ -10,9 +10,10 @@
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/calendar.events",
-  // Read-only mirror of Google Tasks. We never write back to Google — the
-  // in-app `tasks` table is the source of truth for team ops work.
-  "https://www.googleapis.com/auth/tasks.readonly",
+  // Read + write on Google Tasks. We mirror into `google_tasks` (read path)
+  // AND let the dashboard check things off, PATCHing the remote task so the
+  // state travels back to Ronny's phone / tasks.google.com.
+  "https://www.googleapis.com/auth/tasks",
   "https://www.googleapis.com/auth/userinfo.email",
   "openid",
 ];

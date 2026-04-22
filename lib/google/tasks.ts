@@ -1,10 +1,15 @@
 /**
  * Google Tasks API v1 client.
  *
- * We only read — our `google_tasks` table is a read-only mirror. Any change
- * flows Google → us, never the other direction. The Tasks API has no sync
- * token like Calendar, so we use `updatedMin` for incremental-ish pulls
- * and rely on the unique (account, list, task) index for idempotence.
+ * Mostly a read path — our `google_tasks` table is a mirror populated by
+ * `listTasks` + `listTaskLists`. The one write we do is `patchTaskStatus`,
+ * so the dashboard can flip a task completed/needsAction and have it travel
+ * back to Google (phone, tasks.google.com, etc.). That's the only mutation
+ * we make against the remote.
+ *
+ * The Tasks API has no sync token like Calendar, so we use `updatedMin` for
+ * incremental-ish pulls and rely on the unique (account, list, task) index
+ * for idempotence.
  */
 const TASKS_API = "https://tasks.googleapis.com/tasks/v1";
 
@@ -32,11 +37,13 @@ export type GoogleTask = {
 /**
  * Thrown when the access token doesn't include the tasks scope. The caller
  * can catch this and surface a "reconnect Google to enable tasks" nudge
- * without failing the whole sync.
+ * without failing the whole sync. Also thrown on the write path when the
+ * token was minted before we upgraded to the full `tasks` scope and only
+ * has `tasks.readonly` — Google returns 403 on PATCH in that case.
  */
 export class TasksScopeMissingError extends Error {
   constructor() {
-    super("Google access token is missing the tasks.readonly scope");
+    super("Google access token is missing the tasks scope");
     this.name = "TasksScopeMissingError";
   }
 }
@@ -111,6 +118,51 @@ export async function listTasks(params: {
     pageToken = json.nextPageToken;
   }
   return out;
+}
+
+/**
+ * PATCH a single task's status (completed ↔ needsAction). Returns the
+ * updated task so the caller can refresh local state with the new
+ * `completed` timestamp and `updated` etag.
+ *
+ * Google's semantics:
+ *   - Setting status=completed requires `tasks` scope (not readonly).
+ *   - `completed` is only set when status=completed; flipping back to
+ *     needsAction should clear it — we pass null explicitly.
+ */
+export async function patchTaskStatus(params: {
+  accessToken: string;
+  tasklistId: string;
+  taskId: string;
+  status: "completed" | "needsAction";
+}): Promise<GoogleTask> {
+  const body: Record<string, unknown> = { status: params.status };
+  if (params.status === "needsAction") {
+    // Explicitly clear completed timestamp when reopening, otherwise Google
+    // keeps the old one around and the UI looks stale.
+    body.completed = null;
+  }
+  const res = await fetch(
+    `${TASKS_API}/lists/${encodeURIComponent(
+      params.tasklistId
+    )}/tasks/${encodeURIComponent(params.taskId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${params.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+  if (res.status === 401 || res.status === 403) {
+    throw new TasksScopeMissingError();
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Google tasks.patch failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as GoogleTask;
 }
 
 /**
