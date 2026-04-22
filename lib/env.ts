@@ -57,21 +57,39 @@ const clientSchema = serverSchema.pick({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: true,
 });
 
-function parseEnv() {
-  // On the server, validate the full schema. On the client, only the
-  // NEXT_PUBLIC_* values are available — validate just those.
-  const isServer = typeof window === "undefined";
-  const schema = isServer ? serverSchema : clientSchema;
-  const parsed = schema.safeParse(process.env);
+/**
+ * Type-wise we always return the full server schema so consumers can access
+ * `env.RESEND_API_KEY` etc. without a narrowing cast at every call site.
+ * At runtime:
+ *   - On the server: fully validated.
+ *   - On the client: only the NEXT_PUBLIC_* fields are populated (the rest
+ *     are `undefined`). That's fine because server-only modules aren't
+ *     imported into the browser bundle — Next.js's build catches any leak.
+ */
+type Env = z.infer<typeof serverSchema>;
 
-  if (!parsed.success) {
-    console.error(
-      "Invalid environment variables:",
-      parsed.error.flatten().fieldErrors
-    );
-    throw new Error("Invalid environment variables — see server logs.");
+function parseEnv(): Env {
+  const isServer = typeof window === "undefined";
+  if (isServer) {
+    const parsed = serverSchema.safeParse(process.env);
+    if (!parsed.success) {
+      console.error(
+        "Invalid environment variables:",
+        parsed.error.flatten().fieldErrors
+      );
+      throw new Error("Invalid environment variables — see server logs.");
+    }
+    return parsed.data;
   }
-  return parsed.data;
+
+  // Client: validate just the public subset, then widen to the server
+  // shape so TypeScript consumers don't need per-callsite casts. Accessing
+  // a server-only key here returns `undefined` at runtime.
+  const parsed = clientSchema.safeParse(process.env);
+  if (!parsed.success) {
+    throw new Error("Invalid client environment variables");
+  }
+  return parsed.data as unknown as Env;
 }
 
 export const env = parseEnv();
