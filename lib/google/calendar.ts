@@ -179,3 +179,211 @@ export function toEventRow(
     source: "google",
   };
 }
+
+// =========================================================================
+// Google Calendar WRITE path — used by lib/inngest/functions.ts to
+// propagate local event creates/edits back to Google Calendar.
+//
+// Mirrors the error-class pattern in lib/google/tasks.ts:
+//   - 401 → EventUnauthorizedError (caller should force-refresh & retry)
+//   - 403 → EventPermissionError (scope missing OR Calendar API not
+//           enabled — not retryable without user/admin action)
+//   - 412 → EventEtagConflictError (remote version changed since read)
+// =========================================================================
+
+export class EventUnauthorizedError extends Error {
+  constructor() {
+    super("Google Calendar returned 401 — access token rejected, needs refresh");
+    this.name = "EventUnauthorizedError";
+  }
+}
+
+export class EventPermissionError extends Error {
+  constructor() {
+    super("Google Calendar returned 403 — scope missing or Calendar API not enabled");
+    this.name = "EventPermissionError";
+  }
+}
+
+export class EventEtagConflictError extends Error {
+  constructor() {
+    super("Google Calendar etag mismatch — concurrent edit detected");
+    this.name = "EventEtagConflictError";
+  }
+}
+
+/**
+ * Shape Google expects for start/end. `dateTime` is ISO (no Z or with
+ * offset — Google uses timeZone to interpret). `date` is an all-day
+ * event in YYYY-MM-DD.
+ */
+type GoogleEventTime =
+  | { dateTime: string; timeZone?: string }
+  | { date: string };
+
+/**
+ * Create a new event on a Google Calendar.
+ *
+ * `calendarId` — usually "primary" for the user's main calendar. Can
+ * be any calendar ID they have write access to.
+ *
+ * `timeZone` — IANA zone like "America/New_York". Google interprets
+ * the `dateTime` field in this zone, so an input of
+ *   { dateTime: "2026-04-25T13:00:00", timeZone: "America/New_York" }
+ * books the event at 1pm ET regardless of where the user's browser is.
+ */
+export async function createGoogleEvent(params: {
+  accessToken: string;
+  calendarId: string;
+  title: string;
+  description?: string | null;
+  location?: string | null;
+  startIso: string;
+  endIso: string;
+  timeZone: string;
+}): Promise<GoogleEvent> {
+  const body: Record<string, unknown> = {
+    summary: params.title,
+    start: {
+      dateTime: params.startIso,
+      timeZone: params.timeZone,
+    } as GoogleEventTime,
+    end: {
+      dateTime: params.endIso,
+      timeZone: params.timeZone,
+    } as GoogleEventTime,
+  };
+  if (params.description) body.description = params.description;
+  if (params.location) body.location = params.location;
+
+  const res = await fetch(
+    `${CAL_API}/calendars/${encodeURIComponent(params.calendarId)}/events`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+  if (res.status === 401) throw new EventUnauthorizedError();
+  if (res.status === 403) throw new EventPermissionError();
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Google events.insert failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as GoogleEvent;
+}
+
+/**
+ * PATCH an existing event. Uses If-Match with the expected etag so
+ * concurrent edits throw EventEtagConflictError instead of silently
+ * overwriting. Pass `expectedEtag: null` to force overwrite.
+ */
+export async function patchGoogleEvent(params: {
+  accessToken: string;
+  calendarId: string;
+  googleEventId: string;
+  expectedEtag: string | null;
+  title?: string;
+  description?: string | null;
+  location?: string | null;
+  startIso?: string;
+  endIso?: string;
+  timeZone?: string;
+}): Promise<GoogleEvent> {
+  const body: Record<string, unknown> = {};
+  if (params.title !== undefined) body.summary = params.title;
+  if (params.description !== undefined) body.description = params.description;
+  if (params.location !== undefined) body.location = params.location;
+  if (params.startIso !== undefined) {
+    body.start = {
+      dateTime: params.startIso,
+      timeZone: params.timeZone ?? "America/New_York",
+    };
+  }
+  if (params.endIso !== undefined) {
+    body.end = {
+      dateTime: params.endIso,
+      timeZone: params.timeZone ?? "America/New_York",
+    };
+  }
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${params.accessToken}`,
+    "Content-Type": "application/json",
+  };
+  if (params.expectedEtag) {
+    headers["If-Match"] = params.expectedEtag;
+  }
+
+  const res = await fetch(
+    `${CAL_API}/calendars/${encodeURIComponent(
+      params.calendarId
+    )}/events/${encodeURIComponent(params.googleEventId)}`,
+    {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify(body),
+    }
+  );
+  if (res.status === 412) throw new EventEtagConflictError();
+  if (res.status === 401) throw new EventUnauthorizedError();
+  if (res.status === 403) throw new EventPermissionError();
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Google events.patch failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as GoogleEvent;
+}
+
+/**
+ * DELETE an event from Google Calendar. Idempotent — 404 is swallowed
+ * so a retry on an already-deleted event is a no-op.
+ */
+export async function deleteGoogleEvent(params: {
+  accessToken: string;
+  calendarId: string;
+  googleEventId: string;
+}): Promise<void> {
+  const res = await fetch(
+    `${CAL_API}/calendars/${encodeURIComponent(
+      params.calendarId
+    )}/events/${encodeURIComponent(params.googleEventId)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+    }
+  );
+  if (res.status === 404) return;
+  if (res.status === 401) throw new EventUnauthorizedError();
+  if (res.status === 403) throw new EventPermissionError();
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Google events.delete failed (${res.status}): ${text}`);
+  }
+}
+
+/**
+ * GET a single event. Used for pull-on-conflict during etag mismatches.
+ */
+export async function getGoogleEvent(params: {
+  accessToken: string;
+  calendarId: string;
+  googleEventId: string;
+}): Promise<GoogleEvent> {
+  const res = await fetch(
+    `${CAL_API}/calendars/${encodeURIComponent(
+      params.calendarId
+    )}/events/${encodeURIComponent(params.googleEventId)}`,
+    { headers: { Authorization: `Bearer ${params.accessToken}` } }
+  );
+  if (res.status === 401) throw new EventUnauthorizedError();
+  if (res.status === 403) throw new EventPermissionError();
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Google events.get failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as GoogleEvent;
+}

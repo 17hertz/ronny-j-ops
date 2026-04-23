@@ -22,6 +22,7 @@ import {
   completeTask,
   listCompletedTodayForMember,
 } from "@/lib/tasks/service";
+import { createEvent } from "@/lib/events/service";
 import {
   renderDigest,
   todayBoundsUtc,
@@ -55,14 +56,13 @@ export async function dispatchIntent(
     case "help":
       return { replyText: HELP_TEXT, actionStatus: "done", intent: "help" };
     case "create_event":
-      return {
-        replyText:
-          "Calendar event creation is coming soon. For now, add it in " +
-          "Google Calendar directly — it'll sync to your dashboard " +
-          "within a minute.",
-        actionStatus: "ignored",
-        intent: "create_event",
-      };
+      return await handleCreateEvent(
+        intent.title,
+        intent.startsAt,
+        intent.endsAt ?? null,
+        intent.location ?? null,
+        teamMemberId
+      );
     case "unknown":
       return {
         replyText:
@@ -242,6 +242,53 @@ async function handleDigest(teamMemberId: string): Promise<DispatchOutcome> {
       actionStatus: "error",
       intent: "get_digest",
       error: err?.message ?? "digest failed",
+    };
+  }
+}
+
+async function handleCreateEvent(
+  title: string,
+  startsAt: string,
+  endsAt: string | null,
+  location: string | null,
+  teamMemberId: string
+): Promise<DispatchOutcome> {
+  try {
+    const event = await createEvent({
+      teamMemberId,
+      title,
+      location,
+      startsAt,
+      endsAt,
+      timezone: TZ,
+      source: "sms",
+    });
+    // Format a friendly confirmation — the parser sometimes produces
+    // ISO with a Z suffix (UTC) or without (local). Either way, render
+    // in ET for the reply since that's Ronny's operational zone.
+    const when = new Date(event.starts_at).toLocaleString("en-US", {
+      timeZone: TZ,
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    const locBit = location ? ` @ ${truncate(location, 30)}` : "";
+    return {
+      replyText: `✓ Scheduled: ${truncate(title, 50)} — ${when}${locBit}`,
+      actionStatus: "done",
+      intent: "create_event",
+      artifactId: event.id,
+    };
+  } catch (err: any) {
+    return {
+      replyText:
+        "Couldn't schedule that event — something broke on our end. Try again, or add it in Google Calendar directly.",
+      actionStatus: "error",
+      intent: "create_event",
+      error: err?.message ?? "create event failed",
     };
   }
 }

@@ -177,3 +177,29 @@ app is further along / revenue is coming in. Oldest items at the top.
     Not urgent — wait until step 3 is proven and Ronny has a week of
     normal usage before layering this on.
 
+
+[ ] Twilio delivery status callback (outbound)
+    Added: 2026-04-23
+    Context: Twilio's Messaging Service exposes a Delivery Status
+    Callback URL. When wired, every outbound message gets a webhook
+    POST as it progresses (queued → sent → delivered / failed /
+    undelivered) plus the carrier error code on failure.
+    Today we only know an outbound failed by checking the Twilio Console
+    manually (that's how we caught the 30032 TFV error during the SMS
+    test). With this webhook we'd catch it in the DB automatically.
+    Scope:
+      1. Build POST /api/webhooks/twilio/status with X-Twilio-Signature
+         verification (reuse the helper pattern from
+         app/api/webhooks/twilio/inbound/route.ts).
+      2. On each callback, look up the sms_messages row by twilio_sid
+         and update a new `delivery_status` + `delivery_error_code`
+         + `delivery_error_message` + `delivered_at` columns
+         (need a small migration).
+      3. Dashboard surfaces: recent undelivered outbounds in a new
+         small widget so Jason can see "X messages didn't land" at
+         a glance.
+      4. Configure the Callback URL in Twilio Console -> Messaging ->
+         Services -> Integration -> Delivery Status Callback.
+    Worth doing before public vendor-facing SMS (vendor notifications,
+    reminder dispatches) so a silent undelivered never goes unnoticed.
+

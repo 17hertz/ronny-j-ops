@@ -31,6 +31,14 @@ import {
   TasksScopeMissingError,
   TasksUnauthorizedError,
 } from "@/lib/google/tasks";
+import {
+  createGoogleEvent,
+  patchGoogleEvent,
+  getGoogleEvent,
+  EventEtagConflictError,
+  EventPermissionError,
+  EventUnauthorizedError,
+} from "@/lib/google/calendar";
 
 export const reminderRunner = inngest.createFunction(
   {
@@ -740,7 +748,303 @@ export const googleTokenRefreshCron = inngest.createFunction(
 );
 
 /**
+ * Push a locally-created/edited event to Google Calendar.
+ *
+ * Fires on `event/push-to-google-calendar` emitted by
+ * lib/events/service.ts. Handles:
+ *   - CREATE:  local row has no google_event_id → POST a new event on
+ *              the user's primary calendar. Save google_event_id + etag.
+ *   - UPDATE:  local row has google_event_id → PATCH with If-Match etag.
+ *              On 412 etag-conflict, refetch + merge (local wins the
+ *              title/description/location/time, we don't try to undo
+ *              a remote delete).
+ *
+ * This is essentially taskPushRunner's cousin — same retry-on-401
+ * pattern, same scope-missing handling, same etag-conflict approach.
+ */
+export const eventPushRunner = inngest.createFunction(
+  {
+    id: "event-push-to-google-calendar",
+    name: "Push local event to Google Calendar",
+    retries: 2,
+  },
+  { event: "event/push-to-google-calendar" },
+  async ({ event, step }) => {
+    const { eventId, teamMemberId } = event.data as {
+      eventId: string;
+      teamMemberId: string;
+    };
+    const admin = createAdminClient();
+
+    // Step 1: load the local row. Bail if someone already flipped
+    // push_status to pushed/skip between emit and wake.
+    const row = await step.run("load-event", async () => {
+      const { data, error } = (await (admin as any)
+        .from("events")
+        .select("*")
+        .eq("id", eventId)
+        .maybeSingle()) as {
+        data: {
+          id: string;
+          title: string;
+          description: string | null;
+          location: string | null;
+          starts_at: string;
+          ends_at: string;
+          timezone: string;
+          google_calendar_id: string | null;
+          google_event_id: string | null;
+          google_account_id: string | null;
+          etag: string | null;
+          push_status: "pending" | "pushed" | "error" | "skip";
+        } | null;
+        error: { message: string } | null;
+      };
+      if (error) throw new Error(`load event failed: ${error.message}`);
+      if (!data) throw new Error(`event not found: ${eventId}`);
+      return data;
+    });
+
+    if (row.push_status === "pushed" || row.push_status === "skip") {
+      return { skipped: true, reason: `push_status=${row.push_status}` };
+    }
+
+    // Step 2: find the Google account to push to. Same logic as tasks —
+    // use the linked account if present, else the team member's primary.
+    const acct = await step.run("load-google-account", async () => {
+      if (row.google_account_id) {
+        const { data } = (await (admin as any)
+          .from("google_calendar_accounts")
+          .select(
+            "id, access_token, refresh_token, token_expires_at, google_email"
+          )
+          .eq("id", row.google_account_id)
+          .maybeSingle()) as {
+          data: {
+            id: string;
+            access_token: string;
+            refresh_token: string;
+            token_expires_at: string;
+            google_email: string;
+          } | null;
+        };
+        return data;
+      }
+      const { data } = (await (admin as any)
+        .from("google_calendar_accounts")
+        .select(
+          "id, access_token, refresh_token, token_expires_at, google_email"
+        )
+        .eq("team_member_id", teamMemberId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()) as {
+        data: {
+          id: string;
+          access_token: string;
+          refresh_token: string;
+          token_expires_at: string;
+          google_email: string;
+        } | null;
+      };
+      return data;
+    });
+
+    if (!acct) {
+      await markEventPushOutcome(admin, eventId, {
+        push_status: "skip",
+        push_error: "No Google account connected for this team member",
+      });
+      return { skipped: true, reason: "no-google-account" };
+    }
+
+    const acctSafe = acct;
+
+    // Step 3: refresh the token if it's near expiry.
+    let accessToken = acctSafe.access_token;
+    const expiresAt = new Date(acctSafe.token_expires_at).getTime();
+    if (expiresAt - Date.now() < GOOGLE_TOKEN_REFRESH_BUFFER_SECONDS * 1000) {
+      accessToken = await step.run("refresh-token", async () =>
+        forceRefreshGoogleToken(admin, acctSafe.id, acctSafe.refresh_token)
+      );
+    }
+
+    // Step 4: resolve which calendar to write to. Events sync uses
+    // "primary" as the default which resolves to the user's main cal.
+    const calendarId = row.google_calendar_id ?? "primary";
+
+    // Retry-on-401 wrapper — same pattern as taskPushRunner.
+    const tokenRef = { current: accessToken };
+    async function withRefreshOn401<T>(
+      fn: (token: string) => Promise<T>
+    ): Promise<T> {
+      try {
+        return await fn(tokenRef.current);
+      } catch (err) {
+        if (err instanceof EventUnauthorizedError) {
+          tokenRef.current = await forceRefreshGoogleToken(
+            admin,
+            acctSafe.id,
+            acctSafe.refresh_token
+          );
+          return await fn(tokenRef.current);
+        }
+        throw err;
+      }
+    }
+
+    // --- CREATE ---------------------------------------------------------
+    if (!row.google_event_id) {
+      try {
+        const created = await step.run("create-google-event", async () =>
+          withRefreshOn401((t) =>
+            createGoogleEvent({
+              accessToken: t,
+              calendarId,
+              title: row.title,
+              description: row.description,
+              location: row.location,
+              startIso: row.starts_at,
+              endIso: row.ends_at,
+              timeZone: row.timezone,
+            })
+          )
+        );
+        await markEventPushOutcome(admin, eventId, {
+          push_status: "pushed",
+          push_error: null,
+          google_account_id: acctSafe.id,
+          google_calendar_id: calendarId,
+          google_event_id: created.id,
+          etag: created.etag ?? null,
+        });
+        return { pushed: true, action: "create", googleEventId: created.id };
+      } catch (err) {
+        const permDenied = err instanceof EventPermissionError;
+        const msg = err instanceof Error ? err.message : String(err);
+        await markEventPushOutcome(admin, eventId, {
+          push_status: permDenied ? "skip" : "error",
+          push_error: msg,
+        });
+        if (permDenied) return { skipped: true, reason: "permission-denied" };
+        throw err;
+      }
+    }
+
+    // --- UPDATE ---------------------------------------------------------
+    try {
+      let updated;
+      try {
+        updated = await step.run("patch-google-event", async () =>
+          withRefreshOn401((t) =>
+            patchGoogleEvent({
+              accessToken: t,
+              calendarId,
+              googleEventId: row.google_event_id!,
+              expectedEtag: row.etag,
+              title: row.title,
+              description: row.description,
+              location: row.location,
+              startIso: row.starts_at,
+              endIso: row.ends_at,
+              timeZone: row.timezone,
+            })
+          )
+        );
+      } catch (err) {
+        if (err instanceof EventEtagConflictError) {
+          // Conflict — remote changed. Pull fresh, then push again
+          // without If-Match. Events favor the local side (the user
+          // just edited something and wants it to stick); we let
+          // status alone since there's no "cancelled" state in our
+          // local events model yet.
+          updated = await step.run("resolve-event-etag-conflict", async () => {
+            await withRefreshOn401((t) =>
+              getGoogleEvent({
+                accessToken: t,
+                calendarId,
+                googleEventId: row.google_event_id!,
+              })
+            );
+            return await withRefreshOn401((t) =>
+              patchGoogleEvent({
+                accessToken: t,
+                calendarId,
+                googleEventId: row.google_event_id!,
+                expectedEtag: null, // force overwrite
+                title: row.title,
+                description: row.description,
+                location: row.location,
+                startIso: row.starts_at,
+                endIso: row.ends_at,
+                timeZone: row.timezone,
+              })
+            );
+          });
+        } else {
+          throw err;
+        }
+      }
+      await markEventPushOutcome(admin, eventId, {
+        push_status: "pushed",
+        push_error: null,
+        etag: updated.etag ?? null,
+      });
+      return { pushed: true, action: "update" };
+    } catch (err) {
+      const permDenied = err instanceof EventPermissionError;
+      const msg = err instanceof Error ? err.message : String(err);
+      await markEventPushOutcome(admin, eventId, {
+        push_status: permDenied ? "skip" : "error",
+        push_error: msg,
+      });
+      if (permDenied) return { skipped: true, reason: "permission-denied" };
+      throw err;
+    }
+  }
+);
+
+/**
+ * Flip push_status + identity columns on an events row. Sibling to
+ * markPushOutcome above — separate because the events table has
+ * slightly different column names (etag vs remote_etag, etc).
+ */
+async function markEventPushOutcome(
+  admin: ReturnType<typeof createAdminClient>,
+  eventId: string,
+  patch: {
+    push_status: "pending" | "pushed" | "error" | "skip";
+    push_error: string | null;
+    google_account_id?: string;
+    google_calendar_id?: string;
+    google_event_id?: string;
+    etag?: string | null;
+  }
+): Promise<void> {
+  const update: Record<string, unknown> = {
+    push_status: patch.push_status,
+    push_error: patch.push_error,
+    last_push_attempt_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  if (patch.google_account_id !== undefined)
+    update.google_account_id = patch.google_account_id;
+  if (patch.google_calendar_id !== undefined)
+    update.google_calendar_id = patch.google_calendar_id;
+  if (patch.google_event_id !== undefined)
+    update.google_event_id = patch.google_event_id;
+  if (patch.etag !== undefined) update.etag = patch.etag;
+
+  await (admin as any).from("events").update(update).eq("id", eventId);
+}
+
+/**
  * Collect all functions the serve handler should register. If we add more
  * functions later (e.g. a nightly digest), just append to this array.
  */
-export const functions = [reminderRunner, taskPushRunner, googleTokenRefreshCron];
+export const functions = [
+  reminderRunner,
+  taskPushRunner,
+  googleTokenRefreshCron,
+  eventPushRunner,
+];
