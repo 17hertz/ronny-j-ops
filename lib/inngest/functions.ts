@@ -431,6 +431,10 @@ export const taskPushRunner = inngest.createFunction(
 
     // --- CREATE ---------------------------------------------------------
     if (!task.google_task_id) {
+      // We already returned early for status='cancelled' above, so the
+      // narrowed shape is safe here. TS doesn't track that narrowing
+      // through the function body, so re-assert with a cast.
+      const liveStatus = task.status as "needsAction" | "completed";
       try {
         const created = await step.run("create-google-task", async () =>
           withRefreshOn401((t) =>
@@ -440,7 +444,7 @@ export const taskPushRunner = inngest.createFunction(
               title: task.title,
               notes: task.notes ?? null,
               due: task.due_at ?? null,
-              status: task.status,
+              status: liveStatus,
             })
           )
         );
@@ -467,6 +471,9 @@ export const taskPushRunner = inngest.createFunction(
     }
 
     // --- UPDATE ---------------------------------------------------------
+    // Status is narrowed to needsAction|completed here too — the cancelled
+    // branch returned early above.
+    const liveUpdateStatus = task.status as "needsAction" | "completed";
     try {
       let updated;
       try {
@@ -480,7 +487,7 @@ export const taskPushRunner = inngest.createFunction(
               title: task.title,
               notes: task.notes ?? null,
               due: task.due_at ?? null,
-              status: task.status,
+              status: liveUpdateStatus,
             })
           )
         );
