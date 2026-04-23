@@ -8,7 +8,10 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "inngest:dev": "npx inngest-cli@latest dev"
+    "inngest:dev": "npx inngest-cli@latest dev",
+    "db:push": "supabase db push",
+    "db:diff": "supabase db diff -f",
+    "db:status": "supabase migration list"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

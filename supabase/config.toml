@@ -1,0 +1,46 @@
+# Supabase CLI config for Ronny J Ops.
+#
+# This file makes `supabase db push`, `supabase db diff`, and
+# `supabase link` work from the repo root. The project is already linked
+# (see supabase/.temp/linked-project.json), so `supabase db push` will
+# apply anything in supabase/migrations/ that hasn't been applied yet.
+#
+# The `project_id` field is the Supabase project ref — visible in the
+# dashboard URL: https://supabase.com/dashboard/project/<ref>.
+project_id = "gytyylwgcmxywdyuouwj"
+
+# ---- api --------------------------------------------------------------
+# Defaults for the Postgres API gateway. Keep these at defaults unless
+# you're running the full Supabase stack locally (we don't — we push
+# against the hosted project).
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+# ---- db ---------------------------------------------------------------
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+# ---- auth -------------------------------------------------------------
+# Site URL + additional redirect URLs used by Supabase's hosted Auth
+# service. Keep in sync with the dashboard (Authentication → URL
+# Configuration). Leaving these commented defers to the hosted config.
+#
+# [auth]
+# site_url = "https://ops.17hertz.io"
+# additional_redirect_urls = ["http://localhost:3001"]
+
+# ---- studio -----------------------------------------------------------
+[studio]
+enabled = true
+port = 54323
+
+# ---- storage ----------------------------------------------------------
+[storage]
+enabled = true
+file_size_limit = "50MiB"
