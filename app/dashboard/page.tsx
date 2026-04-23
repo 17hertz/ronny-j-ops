@@ -13,6 +13,7 @@ import { NewTaskForm } from "./new-task-form";
 import { ReconnectBanner } from "./reconnect-banner";
 import { CompletedTodaySection } from "./completed-today-section";
 import { listCompletedTodayForMember } from "@/lib/tasks/service";
+import { SyncErrorsPanel } from "./sync-errors-panel";
 import { TaskCheckbox } from "./task-checkbox";
 import {
   labelFor,
@@ -214,6 +215,42 @@ export default async function DashboardPage({
     teamMemberId: teamMember.id,
   });
 
+  // Errored push rows — tasks + events that failed to sync to Google
+  // and are sitting at push_status='error'. Shown in the SyncErrorsPanel
+  // at the top of the dashboard so infrastructure hiccups are visible
+  // BEFORE Ronny notices. 'skip' rows (scope/permission issues) are NOT
+  // included — those need a Google reconnect via the banner above.
+  const { data: erroredTasks } = (await supabase
+    .from("tasks")
+    .select("id, title, push_error, last_push_attempt_at")
+    .eq("team_member_id", teamMember.id)
+    .eq("push_status", "error")
+    .order("last_push_attempt_at", { ascending: false })
+    .limit(20)) as {
+    data: Array<{
+      id: string;
+      title: string;
+      push_error: string | null;
+      last_push_attempt_at: string | null;
+    }> | null;
+  };
+
+  const { data: erroredEvents } = (await supabase
+    .from("events")
+    .select("id, title, push_error, last_push_attempt_at, starts_at")
+    .eq("created_by", teamMember.id)
+    .eq("push_status", "error")
+    .order("last_push_attempt_at", { ascending: false })
+    .limit(20)) as {
+    data: Array<{
+      id: string;
+      title: string;
+      push_error: string | null;
+      last_push_attempt_at: string | null;
+      starts_at: string;
+    }> | null;
+  };
+
   // Open tasks for this user — needsAction, due soon or overdue. Reads
   // from the unified public.tasks SoT (Google-synced + locally-created
   // both show up here). Cancelled rows are excluded. Capped at 10 so
@@ -372,6 +409,16 @@ export default async function DashboardPage({
           <ReconnectBanner accounts={accountsNeedingReconnect} />
         </div>
       )}
+
+      {/* Sync-errors panel — tasks + events that failed to push to
+          Google. Hidden entirely when empty so normal operation shows
+          a clean dashboard. */}
+      <div className="mt-6">
+        <SyncErrorsPanel
+          erroredTasks={erroredTasks ?? []}
+          erroredEvents={erroredEvents ?? []}
+        />
+      </div>
 
       <section className="mt-12 flex items-end justify-between gap-6">
         <div>
