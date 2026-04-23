@@ -195,8 +195,15 @@ export async function POST(req: Request) {
         .eq("id", existingMember.id);
     }
   } else {
+    // team_members schema (verified in Supabase):
+    //   email       text   NOT NULL  (no default — must provide)
+    //   full_name   text   NOT NULL  (no default — must provide)
+    //   role        team_role enum NOT NULL (default 'operator', valid:
+    //               owner | admin | operator | readonly)
+    //   auth_user_id uuid  NOT NULL
     const insertPayload: Record<string, unknown> = {
       auth_user_id: authUserId,
+      email,
       full_name: fullName || email.split("@")[0],
       role: "admin",
     };
