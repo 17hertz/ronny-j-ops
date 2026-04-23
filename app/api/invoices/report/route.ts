@@ -76,7 +76,10 @@ export async function POST(request: Request) {
 
     if (body.format === "pdf") {
       const pdf = await renderExpenseReportPdf(report);
-      return new NextResponse(pdf, {
+      // Next 14's NextResponse BodyInit types don't accept Node Buffer
+      // directly in stricter TS setups — wrapping in Uint8Array gives
+      // a universally-accepted view over the same memory (no copy).
+      return new NextResponse(new Uint8Array(pdf), {
         status: 200,
         headers: {
           "Content-Type": "application/pdf",
@@ -88,7 +91,7 @@ export async function POST(request: Request) {
 
     // xlsx
     const xlsx = await renderExpenseReportXlsx(report);
-    return new NextResponse(xlsx, {
+    return new NextResponse(new Uint8Array(xlsx), {
       status: 200,
       headers: {
         "Content-Type":
