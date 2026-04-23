@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "./sign-out-button";
 import { SyncNowButton } from "./sync-now-button";
+import { TestSmsButton } from "./test-sms-button";
 import { TaskCheckbox } from "./task-checkbox";
 import {
   labelFor,
@@ -330,8 +331,11 @@ export default async function DashboardPage() {
                   </li>
                 ))}
               </ul>
-              <div className="mt-4">
+              <div className="mt-4 space-y-3">
                 <SyncNowButton />
+                {/* Sends today's events + tasks to your team_members.phone.
+                    Preview-only when SMS_ENABLED=false. */}
+                <TestSmsButton />
               </div>
             </>
           ) : (

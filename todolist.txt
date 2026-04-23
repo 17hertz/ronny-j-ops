@@ -21,6 +21,23 @@ app is further along / revenue is coming in. Oldest items at the top.
     Must happen before the first real vendor (non-Jason) uses the site.
 
 
+[ ] Rotate CRON_SECRET + WEBHOOK_SECRET into separate values before going live
+    Added: 2026-04-22
+    Reason: CRON_SECRET and WEBHOOK_SECRET currently share the same value
+    (0cace6a1...fae4f7a) in both .env.local and Vercel. They're used for
+    different purposes (CRON_SECRET authenticates Vercel Cron -> /api/cron/*;
+    WEBHOOK_SECRET authenticates inbound webhooks), so a leak of one should
+    not compromise the other.
+    Steps:
+      1. Generate two fresh tokens:
+           node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      2. Update CRON_SECRET in .env.local and in Vercel (all 3 envs).
+      3. Update WEBHOOK_SECRET in .env.local and in Vercel (all 3 envs).
+      4. Redeploy. Smoke-test the cron endpoint with:
+           curl -H "Authorization: Bearer <new_token>" <prod_url>/api/cron/sync
+      5. Smoke-test any webhook path (Twilio inbound, etc.).
+
+
 [ ] Digital W9 signature (DocuSeal integration)
     Added: 2026-04-22
     Status: Deferred — don't want to incur $20/mo until app is finished.
@@ -58,4 +75,49 @@ app is further along / revenue is coming in. Oldest items at the top.
     exposes ACH origination. Build a "pay vendor" action on the vendor
     review page. This is where the real value-add kicks in — today
     someone still runs the payment manually.
+
+
+[ ] Unblock daily-digest SMS (TFV or 10DLC)
+    Added: 2026-04-22
+    Reason: Ronny prefers SMS over WhatsApp. Today's test send on the
+    toll-free +18446261128 was rejected by the destination carrier with
+    Twilio error 30032 "Toll-Free Verification Required" — confirmed in
+    Twilio Console -> Monitor -> Messaging Logs. Carriers (AT&T, T-Mobile,
+    Verizon) silently drop unverified toll-free SMS at the edge.
+    Options:
+      A) Submit TFV for +18446261128. ~10-minute form at
+         console.twilio.com -> Messaging -> Regulatory Compliance ->
+         Toll-Free Verification. Approval typically 1-3 weeks.
+      B) Ask Ronny to help stand up a 10DLC (standard 10-digit number)
+         which needs brand + campaign registration (1-3 days) and has
+         higher throughput + delivery rates for business messaging.
+    Interim workaround in place: WhatsApp path works today via the
+    Twilio sandbox (TWILIO_WHATSAPP_FROM=whatsapp:+14155238886). Dashboard
+    has a "Send test WhatsApp" button next to the SMS one. Sandbox has a
+    24h session window per inbound message from the recipient — NOT a
+    durable channel, don't rely on it past proof-of-concept.
+
+
+[ ] Wire daily digest cron (Inngest scheduled function)
+    Added: 2026-04-22
+    Status: Today the daily digest is a manual "Send test SMS" /
+    "Send test WhatsApp" button on /dashboard. The goal is an automatic
+    morning text at (e.g.) 7am ET with today's calendar + today's Google
+    Tasks, sent to team_members.phone for each team member.
+    Blocked by: SMS delivery unblock above. Ronny prefers SMS, so the
+    recurring cron waits for TFV/10DLC — we don't want his phone to go
+    quiet when the WhatsApp sandbox window closes.
+    Scope when unblocked:
+      1. Add an Inngest scheduled function (cron "0 12 * * *" UTC ≈ 7am ET;
+         revisit for DST or switch to a tz-aware scheduler). Iterate
+         team_members with phone set and call renderDigest + sendSms
+         per member.
+      2. Optional: per-member channel preference column
+         team_members.notify_channel ('sms' | 'whatsapp' | 'email') so
+         Jason can stay on WhatsApp while Ronny gets SMS.
+      3. Error handling: per-member try/catch, same soft-fail-per-recipient
+         pattern we just added to Google sync. One bad phone shouldn't
+         kill the whole batch.
+      4. Reuses lib/notify/digest.ts and lib/notify/sms.ts verbatim — all
+         data access + rendering is already proven end-to-end.
 

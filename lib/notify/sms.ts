@@ -16,6 +16,17 @@ import { env } from "@/lib/env";
 
 const client = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
 
+// A real Twilio Messaging Service SID is "MG" + 32 hex chars. Anything
+// else (empty string, the placeholder "MGxxxx..." from .env.example, or
+// a malformed paste) should be treated as unset so we fall back to the
+// bare `from` number instead of handing garbage to Twilio and 21705'ing.
+const MG_SID_RE = /^MG[0-9a-fA-F]{32}$/;
+function validMessagingServiceSid(): string | null {
+  const v = env.TWILIO_MESSAGING_SERVICE_SID;
+  if (!v) return null;
+  return MG_SID_RE.test(v) ? v : null;
+}
+
 export type SmsSendResult = {
   ok: boolean;
   providerMessageId?: string;
@@ -43,15 +54,25 @@ export async function sendSms(opts: {
     return { ok: false, error: `invalid E.164 number: ${opts.to}` };
   }
 
-  const from =
-    env.TWILIO_MESSAGING_SERVICE_SID || env.TWILIO_SMS_FROM;
+  const msgSid = validMessagingServiceSid();
+
+  // Sanity-check that *something* is configured to send from. If neither
+  // a valid MG SID nor a TWILIO_SMS_FROM number is set, fail loudly rather
+  // than letting Twilio 400 with a cryptic "missing 'from' parameter".
+  if (!msgSid && !env.TWILIO_SMS_FROM) {
+    return {
+      ok: false,
+      error:
+        "No Twilio sender configured — set TWILIO_MESSAGING_SERVICE_SID (MG…) or TWILIO_SMS_FROM (+1…)",
+    };
+  }
 
   try {
     const msg = await client.messages.create({
       to: opts.to,
       body: opts.body,
-      ...(env.TWILIO_MESSAGING_SERVICE_SID
-        ? { messagingServiceSid: env.TWILIO_MESSAGING_SERVICE_SID }
+      ...(msgSid
+        ? { messagingServiceSid: msgSid }
         : { from: env.TWILIO_SMS_FROM }),
     });
 
