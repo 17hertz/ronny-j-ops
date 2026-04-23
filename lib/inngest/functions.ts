@@ -321,14 +321,21 @@ export const taskPushRunner = inngest.createFunction(
       return { skipped: true, reason: "no-google-account" };
     }
 
+    // Re-bind the narrowed (non-null) acct into a local. TS's
+    // control-flow analysis doesn't propagate null-narrowing into inner
+    // function closures (step.run callbacks, withRefreshOn401), even
+    // when the captured variable is const. Capturing `acctSafe` instead
+    // of `acct` keeps the narrowing alive across those closures.
+    const acctSafe = acct;
+
     // Step 3: refresh token if it's near expiry. Same buffer as sync.
     // We persist the rotated refresh_token too (Google occasionally
     // rotates silently — dropping it means eventual re-auth prompts).
-    let accessToken = acct.access_token;
-    const expiresAt = new Date(acct.token_expires_at).getTime();
+    let accessToken = acctSafe.access_token;
+    const expiresAt = new Date(acctSafe.token_expires_at).getTime();
     if (expiresAt - Date.now() < GOOGLE_TOKEN_REFRESH_BUFFER_SECONDS * 1000) {
       accessToken = await step.run("refresh-token", async () => {
-        const refreshed = await refreshAccessToken(acct.refresh_token);
+        const refreshed = await refreshAccessToken(acctSafe.refresh_token);
         const patch: Record<string, unknown> = {
           access_token: refreshed.access_token,
           token_expires_at: new Date(
@@ -342,7 +349,7 @@ export const taskPushRunner = inngest.createFunction(
         await (admin as any)
           .from("google_calendar_accounts")
           .update(patch)
-          .eq("id", acct.id);
+          .eq("id", acctSafe.id);
         return refreshed.access_token;
       });
     }
@@ -353,13 +360,8 @@ export const taskPushRunner = inngest.createFunction(
     //
     // `accessToken` is captured by reference via a holder object so that
     // after a refresh, subsequent calls in the same run see the new token
-    // without re-plumbing through function args.
-    //
-    // Re-bind the narrowed (non-null) `acct` into a local so the closure
-    // captures the narrowed type. TS's control-flow analysis doesn't
-    // propagate null-narrowing into inner-function closures even when
-    // the captured variable is const — annoying but well-documented.
-    const acctSafe = acct;
+    // without re-plumbing through function args. `acctSafe` is the
+    // null-narrowed rebind of acct; see where it's declared above.
     const tokenRef = { current: accessToken };
     async function withRefreshOn401<T>(fn: (token: string) => Promise<T>): Promise<T> {
       try {
