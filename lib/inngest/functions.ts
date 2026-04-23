@@ -354,6 +354,12 @@ export const taskPushRunner = inngest.createFunction(
     // `accessToken` is captured by reference via a holder object so that
     // after a refresh, subsequent calls in the same run see the new token
     // without re-plumbing through function args.
+    //
+    // Re-bind the narrowed (non-null) `acct` into a local so the closure
+    // captures the narrowed type. TS's control-flow analysis doesn't
+    // propagate null-narrowing into inner-function closures even when
+    // the captured variable is const — annoying but well-documented.
+    const acctSafe = acct;
     const tokenRef = { current: accessToken };
     async function withRefreshOn401<T>(fn: (token: string) => Promise<T>): Promise<T> {
       try {
@@ -362,8 +368,8 @@ export const taskPushRunner = inngest.createFunction(
         if (err instanceof TasksUnauthorizedError) {
           tokenRef.current = await forceRefreshGoogleToken(
             admin,
-            acct.id,
-            acct.refresh_token
+            acctSafe.id,
+            acctSafe.refresh_token
           );
           return await fn(tokenRef.current);
         }
@@ -439,7 +445,7 @@ export const taskPushRunner = inngest.createFunction(
         await markPushOutcome(admin, taskId, {
           push_status: "pushed",
           push_error: null,
-          google_account_id: acct.id,
+          google_account_id: acctSafe.id,
           google_tasklist_id: tasklistId!,
           google_task_id: created.id,
           remote_etag: created.etag ?? null,
