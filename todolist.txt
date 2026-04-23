@@ -121,3 +121,59 @@ app is further along / revenue is coming in. Oldest items at the top.
       4. Reuses lib/notify/digest.ts and lib/notify/sms.ts verbatim — all
          data access + rendering is already proven end-to-end.
 
+
+[ ] If Anthropic API spend trends toward $50/mo: migrate hot paths
+    Added: 2026-04-23
+    Trigger: $20/mo cap already enforced in-code via api_spend_log +
+    pre-flight check. This entry is the NEXT-STEP plan if the cap is
+    bumping up against the ceiling week after week and quality suffers
+    from the refusals.
+    Options to evaluate when triggered:
+      A) OpenRouter as a drop-in. Route the `claude-sonnet-4-5` calls
+         through OpenRouter's Anthropic pass-through and negotiate a
+         volume discount. Pros: no code change beyond the client init,
+         keeps the tool-use schema identical. Cons: adds a hop of latency
+         (~100-200ms), OpenRouter's uptime is slightly worse than Anthropic
+         direct.
+      B) Gemini 2.5 Flash for the SMS intent parser. Flash is ~10x cheaper
+         than Sonnet and handles constrained tool-use fine for
+         classification-grade tasks. Keep Sonnet for the agent chat where
+         multi-step reasoning matters. Cons: dual-provider code path, need
+         to maintain a separate tools schema format, new env vars.
+      C) DeepSeek V3 (or similar) via its own API for the SMS parser.
+         Cheaper still than Gemini Flash. Cons: data residency / privacy
+         questions if PII ever leaks into a command body.
+      D) Local Ollama (Llama 3.1 8B or Mistral) for SMS parser only.
+         Zero marginal cost. Cons: requires a persistent inference host
+         (not Vercel serverless), which reopens the "don't want to run it
+         on my laptop" thread. Would need a cheap VPS ($6-12/mo) — at
+         that point the net cost savings may wash vs. just paying Flash.
+    Do not start evaluating until the $20 cap has been burning for a
+    full month with legitimate traffic. Premature optimization.
+
+
+[ ] Team-ops shared tasks (visible to all, synced per-assignee)
+    Added: 2026-04-23
+    Context: step 3 of the current rollout syncs each team member's tasks
+    to THEIR OWN Google Tasks — per-user, not shared. Google Tasks has no
+    reliable shared-list API, so that's as far as Google can take us.
+    What's missing: "team-ops" tasks that Jason and Ronny can both see on
+    the dashboard (e.g. "approve 3 invoices this week"), regardless of who
+    it's synced to on Google.
+    Scope:
+      1. Add `assigned_to uuid references team_members(id)` to public.tasks
+         (sync target — Google mirror goes to assignee's account).
+      2. Add `visible_to team_members_id[] default null` OR a kind column
+         (team | personal) — TBD. If null/team, all team members can
+         see + edit in the dashboard.
+      3. Dashboard Tasks panel splits into two: "Mine" and "Team"
+         sub-sections. Team section shows assignee + source badges.
+      4. SMS/WhatsApp: `add team task: X for Ronny` → assigned_to=Ronny,
+         visible to team. Default (no 'team' keyword) stays as today —
+         personal task for the sender.
+      5. Reassignment: moving a task from Jason to Ronny means DELETE
+         from Jason's Google list + CREATE on Ronny's. Handle as a
+         transactional push via Inngest.
+    Not urgent — wait until step 3 is proven and Ronny has a week of
+    normal usage before layering this on.
+

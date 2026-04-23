@@ -70,6 +70,24 @@ export async function exchangeCodeForTokens(
   return (await res.json()) as TokenResponse;
 }
 
+/**
+ * Thrown when Google returns `invalid_grant` on a refresh attempt, meaning
+ * the refresh token itself is permanently dead. Common causes: user
+ * revoked access, changed their password, token went unused for >6 months,
+ * or the OAuth app moved between Testing / Published modes.
+ *
+ * Callers should NOT retry — flag the account for user reconnect and
+ * move on. Retrying just burns quota.
+ */
+export class RefreshTokenDeadError extends Error {
+  readonly body: string;
+  constructor(body: string) {
+    super(`Google refresh token dead (invalid_grant): ${body.slice(0, 200)}`);
+    this.name = "RefreshTokenDeadError";
+    this.body = body;
+  }
+}
+
 export async function refreshAccessToken(
   refreshToken: string
 ): Promise<Omit<TokenResponse, "refresh_token"> & { refresh_token?: string }> {
@@ -88,6 +106,12 @@ export async function refreshAccessToken(
 
   if (!res.ok) {
     const text = await res.text();
+    // Google returns 400 + {"error":"invalid_grant",...} for dead refresh
+    // tokens. Other 4xx/5xx are transient (rate limit, Google outage) and
+    // callers should retry with backoff.
+    if (res.status === 400 && /"invalid_grant"/.test(text)) {
+      throw new RefreshTokenDeadError(text);
+    }
     throw new Error(`Google token refresh failed (${res.status}): ${text}`);
   }
 

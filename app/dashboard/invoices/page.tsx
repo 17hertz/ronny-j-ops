@@ -25,6 +25,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { ExpenseReportButton } from "./expense-report-button";
 
 export const dynamic = "force-dynamic";
 
@@ -134,6 +135,11 @@ export default async function InvoicesListPage() {
             ))}
         </div>
       )}
+
+      {/* Expense report generator — dropdown + date picker + download.
+          Lives above the list so it's the first thing you see when you
+          come here specifically to export. */}
+      <ExpenseReportButton />
 
       <section className="mt-10 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950">
         {rows.length === 0 ? (

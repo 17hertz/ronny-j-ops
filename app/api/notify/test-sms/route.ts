@@ -29,7 +29,9 @@ import {
   todayBoundsUtc,
   type DigestEvent,
   type DigestTask,
+  type CompletedTaskSummary,
 } from "@/lib/notify/digest";
+import { listCompletedTodayForMember } from "@/lib/tasks/service";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -133,7 +135,18 @@ export async function POST(request: Request) {
     overdue: t.due_at ? new Date(t.due_at) < startUtc : false,
   }));
 
-  const body = renderDigest({ events, tasks, tz: TZ });
+  // Today's completions — renders as an optional "Done:" section at the
+  // bottom of the digest. Matches the dashboard's collapsible recap so
+  // the morning SMS and end-of-day SMS tell the same story.
+  const completedRows = await listCompletedTodayForMember({
+    teamMemberId: member.id,
+    tz: TZ,
+  });
+  const completed: CompletedTaskSummary[] = completedRows.map((t) => ({
+    title: t.title,
+  }));
+
+  const body = renderDigest({ events, tasks, completed, tz: TZ });
 
   // Dispatch on channel. Note: WhatsApp has no SMS_ENABLED equivalent,
   // so `skipped` can never come back from that path. SMS can still short-

@@ -13,23 +13,26 @@ export const maxDuration = 15;
  * POST /api/google/tasks/:id/toggle
  *
  * Flip a task between `completed` and `needsAction`. `:id` is the
- * `google_tasks.id` (our local uuid), not Google's task id — it's what the
- * dashboard already has on hand.
+ * `public.tasks.id` (our local uuid), not Google's task id. Route lives
+ * under /api/google/tasks/ for URL-stability even though the source table
+ * changed — the client already posts here.
  *
  * Body: { status: "completed" | "needsAction" }
  *
  * Flow:
  *   1. Auth — Supabase session → team_members row.
- *   2. Load the local google_tasks row, verify team_member_id matches.
- *   3. Load the google_calendar_accounts row for Google credentials;
- *      refresh the access token if it's near expiry (same buffer as sync).
- *   4. PATCH Google first, THEN mirror into our row. If Google rejects,
- *      we bail without touching local state — avoids the UI showing
+ *   2. Load the local public.tasks row, verify team_member_id matches.
+ *   3. If the task has no google_task_id (local-only, never pushed —
+ *      a newly-created dashboard task, for example), just update local
+ *      state. The Inngest push worker (step 3 of the rollout) will
+ *      propagate the completed state on its first push.
+ *   4. Otherwise: load the google_calendar_accounts row, refresh the
+ *      access token if it's near expiry, PATCH Google first, then mirror
+ *      into public.tasks. Google-first ordering prevents the UI showing
  *      "done" for something Google thinks is still open.
  *
- * On 401/403 we surface `scope_missing: true` so the client can tell the
- * user to reconnect (tokens minted before the full `tasks` scope only have
- * readonly).
+ * On 401/403 from Google we surface `scope_missing: true` so the client
+ * can tell the user to reconnect.
  */
 export async function POST(
   request: Request,
@@ -73,7 +76,7 @@ export async function POST(
   const admin = createAdminClient();
 
   const { data: task, error: taskErr } = (await (admin as any)
-    .from("google_tasks")
+    .from("tasks")
     .select(
       "id, team_member_id, google_account_id, google_tasklist_id, google_task_id"
     )
@@ -82,9 +85,9 @@ export async function POST(
     data: {
       id: string;
       team_member_id: string;
-      google_account_id: string;
-      google_tasklist_id: string;
-      google_task_id: string;
+      google_account_id: string | null;
+      google_tasklist_id: string | null;
+      google_task_id: string | null;
     } | null;
     error: { message: string } | null;
   };
@@ -100,6 +103,32 @@ export async function POST(
     // Belt-and-braces — RLS would already block a regular client, but the
     // admin client we use here does not enforce it.
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  // Local-only task (never pushed to Google yet — e.g. freshly created
+  // from the dashboard form before the Inngest push worker has run).
+  // Update local state and queue a push; the worker will PATCH Google
+  // on our behalf with the final status.
+  if (!task.google_task_id || !task.google_account_id || !task.google_tasklist_id) {
+    const { error: updateErr } = await (admin as any)
+      .from("tasks")
+      .update({
+        status: desired,
+        completed_at: desired === "completed" ? new Date().toISOString() : null,
+        push_status: "pending",
+        last_push_attempt_at: null,
+        push_error: null,
+      })
+      .eq("id", task.id);
+    if (updateErr) {
+      console.error("[tasks/toggle] local-only update failed", updateErr);
+      return NextResponse.json({ error: updateErr.message }, { status: 500 });
+    }
+    return NextResponse.json({
+      ok: true,
+      status: desired,
+      completed_at: desired === "completed" ? new Date().toISOString() : null,
+    });
   }
 
   const { data: acct, error: acctErr } = (await (admin as any)
@@ -173,15 +202,19 @@ export async function POST(
     );
   }
 
-  // Mirror the new state into google_tasks. Google clears `completed` when
-  // the task is reopened, so we mirror both sides.
+  // Mirror the new state into public.tasks. Google clears `completed` when
+  // the task is reopened, so we mirror both sides. push_status='pushed'
+  // because we just PATCHed Google successfully — no queued write to do.
   const { error: updateErr } = await (admin as any)
-    .from("google_tasks")
+    .from("tasks")
     .update({
       status: gtask.status,
       completed_at: gtask.completed ?? null,
       remote_updated_at: gtask.updated ?? null,
-      etag: gtask.etag ?? null,
+      remote_etag: gtask.etag ?? null,
+      push_status: "pushed",
+      last_push_attempt_at: new Date().toISOString(),
+      push_error: null,
       updated_at: new Date().toISOString(),
     })
     .eq("id", task.id);

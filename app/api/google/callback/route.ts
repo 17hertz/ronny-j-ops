@@ -110,6 +110,12 @@ export async function GET(request: Request) {
         scope: tokens.scope,
         token_expires_at: tokenExpiresAt,
         sync_token: null,
+        // Clear any auth-health flags left over from a previous
+        // dead-token state. A successful reconnect IS the remedy the
+        // banner was asking for, so drop the flag + stale error.
+        needs_reconnect: false,
+        last_auth_error: null,
+        last_auth_error_at: null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "team_member_id,google_email" }

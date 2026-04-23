@@ -4,6 +4,15 @@ import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "./sign-out-button";
 import { SyncNowButton } from "./sync-now-button";
 import { TestSmsButton } from "./test-sms-button";
+import {
+  UpNextRangePicker,
+  type UpNextRange,
+} from "./up-next-range-picker";
+import { UpNextPager } from "./up-next-pager";
+import { NewTaskForm } from "./new-task-form";
+import { ReconnectBanner } from "./reconnect-banner";
+import { CompletedTodaySection } from "./completed-today-section";
+import { listCompletedTodayForMember } from "@/lib/tasks/service";
 import { TaskCheckbox } from "./task-checkbox";
 import {
   labelFor,
@@ -12,7 +21,24 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: { range?: string; google?: string; page?: string };
+}) {
+  // "Up next" range — URL-driven so the state survives refresh and is
+  // bookmarkable. Default is 7d (matches historical behavior).
+  const rangeParam = searchParams?.range;
+  const upNextRange: UpNextRange =
+    rangeParam === "today" ||
+    rangeParam === "30d" ||
+    rangeParam === "year"
+      ? rangeParam
+      : "7d";
+
+  // Pagination page index (0-indexed). Guarded to stay non-negative — a
+  // negative or non-numeric value falls back to page 0.
+  const upNextPage = Math.max(0, parseInt(searchParams?.page ?? "0", 10) || 0);
   const supabase = createClient();
 
   const {
@@ -73,10 +99,15 @@ export default async function DashboardPage() {
     );
   }
 
-  // Google accounts this member has connected (if any).
+  // Google accounts this member has connected (if any). `needs_reconnect`
+  // drives the yellow banner at the top of the dashboard when a refresh
+  // token has died; `last_auth_error_at` is shown in the banner tooltip
+  // for debugging.
   const { data: googleAccounts } = (await supabase
     .from("google_calendar_accounts")
-    .select("id, google_email, scope, token_expires_at, updated_at")
+    .select(
+      "id, google_email, scope, token_expires_at, updated_at, needs_reconnect, last_auth_error_at"
+    )
     .eq("team_member_id", teamMember.id)
     .order("updated_at", { ascending: false })) as {
     data:
@@ -86,24 +117,48 @@ export default async function DashboardPage() {
           scope: string;
           token_expires_at: string;
           updated_at: string;
+          needs_reconnect: boolean;
+          last_auth_error_at: string | null;
         }>
       | null;
   };
 
-  // Next 7 days of events across every connected calendar. Lower bound is
-  // "now" so we don't clutter the view with events that already ended; upper
-  // bound is end-of-day-7-days-out. Ordering is chronological so the render
-  // step can group by day in-order.
+  const accountsNeedingReconnect = (googleAccounts ?? []).filter(
+    (a) => a.needs_reconnect
+  );
+
+  // Up-next events across every connected calendar. Lower bound is "now"
+  // (we don't clutter the view with events that already ended); upper
+  // bound depends on the selected range. Ordering is chronological so the
+  // render step can group by day in-order.
   const now = new Date();
-  const weekEnd = new Date(now);
-  weekEnd.setDate(weekEnd.getDate() + 7);
-  weekEnd.setHours(23, 59, 59, 999);
+  const rangeEnd = new Date(now);
+  switch (upNextRange) {
+    case "today":
+      // End of today (local-ish) — we don't know the user's zone here, so
+      // we approximate with end-of-UTC-day. Fine for the dashboard view;
+      // the digest cron is the tz-aware path.
+      rangeEnd.setHours(23, 59, 59, 999);
+      break;
+    case "30d":
+      rangeEnd.setDate(rangeEnd.getDate() + 30);
+      rangeEnd.setHours(23, 59, 59, 999);
+      break;
+    case "year":
+      rangeEnd.setFullYear(rangeEnd.getFullYear() + 1);
+      break;
+    case "7d":
+    default:
+      rangeEnd.setDate(rangeEnd.getDate() + 7);
+      rangeEnd.setHours(23, 59, 59, 999);
+      break;
+  }
 
   const { data: upcomingEvents } = (await supabase
     .from("events")
     .select("id, title, location, starts_at, ends_at, timezone")
     .gte("ends_at", now.toISOString())
-    .lte("starts_at", weekEnd.toISOString())
+    .lte("starts_at", rangeEnd.toISOString())
     .order("starts_at", { ascending: true })) as {
     data:
       | Array<{
@@ -117,6 +172,24 @@ export default async function DashboardPage() {
       | null;
   };
 
+  // Pagination: slice the chronological list into pages of 12. Pagination
+  // only renders when there's more than one page — for most weeks with
+  // <12 events the pager stays hidden. Slicing by raw event count (vs by
+  // calendar day) means a day's events can span two pages in extreme
+  // cases, but keeps the visible list stable at 12 items per render.
+  const UP_NEXT_PAGE_SIZE = 12;
+  const allUpcoming = upcomingEvents ?? [];
+  const totalUpNextPages = Math.max(
+    1,
+    Math.ceil(allUpcoming.length / UP_NEXT_PAGE_SIZE)
+  );
+  // Clamp page index if someone hand-edits the URL past the end.
+  const currentUpNextPage = Math.min(upNextPage, totalUpNextPages - 1);
+  const pagedUpcomingEvents = allUpcoming.slice(
+    currentUpNextPage * UP_NEXT_PAGE_SIZE,
+    (currentUpNextPage + 1) * UP_NEXT_PAGE_SIZE
+  );
+
   // Group by local calendar date so each day becomes its own sub-list.
   // We key on ISO YYYY-MM-DD in the event's own timezone when available,
   // otherwise America/New_York — this avoids events shifting across the
@@ -125,7 +198,8 @@ export default async function DashboardPage() {
     string,
     NonNullable<typeof upcomingEvents>[number][]
   >();
-  for (const ev of upcomingEvents ?? []) {
+  // Group only the paged slice — each page's by-day view is independent.
+  for (const ev of pagedUpcomingEvents) {
     const key = localDateKey(ev.starts_at, ev.timezone);
     const list = eventsByDay.get(key) ?? [];
     list.push(ev);
@@ -133,11 +207,20 @@ export default async function DashboardPage() {
   }
   const eventDayKeys = Array.from(eventsByDay.keys());
 
-  // Open Google Tasks for this user — due soon or overdue, status=needsAction.
-  // Capped at 10 so the panel doesn't blow up on heavy backlogs.
+  // Completed-today recap — powers the collapsible section inside the
+  // Tasks panel. Uses the service's zone-aware "today" window so a late-
+  // night completion stays in today's recap until the real 00:00 ET.
+  const completedToday = await listCompletedTodayForMember({
+    teamMemberId: teamMember.id,
+  });
+
+  // Open tasks for this user — needsAction, due soon or overdue. Reads
+  // from the unified public.tasks SoT (Google-synced + locally-created
+  // both show up here). Cancelled rows are excluded. Capped at 10 so
+  // the panel doesn't blow up on heavy backlogs.
   const { data: openTasks } = (await supabase
-    .from("google_tasks")
-    .select("id, title, due_at, status")
+    .from("tasks")
+    .select("id, title, due_at, status, source")
     .eq("team_member_id", teamMember.id)
     .eq("status", "needsAction")
     .order("due_at", { ascending: true, nullsFirst: false })
@@ -148,14 +231,20 @@ export default async function DashboardPage() {
           title: string;
           due_at: string | null;
           status: "needsAction" | "completed";
+          source: string;
         }>
       | null;
   };
 
   // Reminders queue — scheduled sends in the next 7 days. Shows what the
   // engine will fire and when, so Jason can sanity-check scheduling.
-  // Admin client bypasses RLS for this read — reminders don't have a direct
-  // team_member_id column so we can't scope via RLS easily yet.
+  // Fixed 7d window regardless of the "Up next" range picker — the
+  // reminder engine's own horizon is tighter than a 30d / year view
+  // would imply.
+  const reminderWindowEnd = new Date(now);
+  reminderWindowEnd.setDate(reminderWindowEnd.getDate() + 7);
+  reminderWindowEnd.setHours(23, 59, 59, 999);
+
   const { data: queuedReminders } = (await supabase
     .from("reminders")
     .select(
@@ -163,7 +252,7 @@ export default async function DashboardPage() {
     )
     .eq("status", "scheduled")
     .gte("send_at", now.toISOString())
-    .lte("send_at", weekEnd.toISOString())
+    .lte("send_at", reminderWindowEnd.toISOString())
     .order("send_at", { ascending: true })
     .limit(10)) as {
     data:
@@ -275,6 +364,15 @@ export default async function DashboardPage() {
         </div>
       </header>
 
+      {/* Auth-health banner — surfaces only when a connected Google
+          account's refresh token has died. Non-disruptive yellow, not
+          red, because this is a remedyable state. */}
+      {accountsNeedingReconnect.length > 0 && (
+        <div className="mt-6">
+          <ReconnectBanner accounts={accountsNeedingReconnect} />
+        </div>
+      )}
+
       <section className="mt-12 flex items-end justify-between gap-6">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.3em] text-brand">
@@ -347,7 +445,19 @@ export default async function DashboardPage() {
           )}
         </Panel>
 
-        <Panel eyebrow="Up next" title="Next 7 days">
+        <Panel
+          eyebrow="Up next"
+          title={
+            upNextRange === "today"
+              ? "Today"
+              : upNextRange === "30d"
+                ? "Next 30 days"
+                : upNextRange === "year"
+                  ? "Next 12 months"
+                  : "Next 7 days"
+          }
+          cta={<UpNextRangePicker current={upNextRange} />}
+        >
           {eventDayKeys.length > 0 ? (
             <div className="space-y-4">
               {eventDayKeys.map((dayKey) => (
@@ -387,13 +497,34 @@ export default async function DashboardPage() {
           ) : (
             <p className="text-sm text-neutral-500">
               {googleAccounts && googleAccounts.length > 0
-                ? "Nothing on the calendar for the next 7 days."
+                ? upNextRange === "today"
+                  ? "Nothing on the calendar today."
+                  : upNextRange === "30d"
+                    ? "Nothing on the calendar for the next 30 days."
+                    : upNextRange === "year"
+                      ? "Nothing on the calendar for the next year."
+                      : "Nothing on the calendar for the next 7 days."
                 : "Connect a Google Calendar and upcoming events will appear here."}
             </p>
           )}
+          {/* Pager: only render when there's more than one page. Keeps
+              the panel uncluttered for the common case of <12 events. */}
+          {totalUpNextPages > 1 && (
+            <UpNextPager
+              currentPage={currentUpNextPage}
+              totalPages={totalUpNextPages}
+            />
+          )}
         </Panel>
 
-        <Panel eyebrow="Google Tasks" title="Open items">
+        <Panel eyebrow="Tasks" title="Open items">
+          {/* Inline create form — source='dashboard'. Anything added here
+              queues a push to Google Tasks via Inngest so it lands on
+              Ronny's phone too. */}
+          <div className="mb-4 rounded-md border border-neutral-800 bg-neutral-950/50 p-3">
+            <NewTaskForm />
+          </div>
+
           {openTasks && openTasks.length > 0 ? (
             <ul className="space-y-2">
               {openTasks.map((t) => (
@@ -406,19 +537,38 @@ export default async function DashboardPage() {
                     initialStatus={t.status}
                     title={t.title}
                   />
-                  <span className="shrink-0 font-mono text-xs text-neutral-500">
-                    {formatTaskDue(t.due_at)}
-                  </span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {/* Small source badge — helps Jason eyeball where a
+                        task came from during the early days. Hidden for
+                        'dashboard' source since that's the default. */}
+                    {t.source && t.source !== "dashboard" && (
+                      <span className="rounded-full border border-neutral-800 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-neutral-500">
+                        {t.source}
+                      </span>
+                    )}
+                    <span className="font-mono text-xs text-neutral-500">
+                      {formatTaskDue(t.due_at)}
+                    </span>
+                  </div>
                 </li>
               ))}
             </ul>
           ) : (
             <p className="text-sm text-neutral-500">
-              {googleAccounts && googleAccounts.length > 0
-                ? "No open Google Tasks. Click Sync now to pull the latest — if you connected before the write scope was added, reconnect Google so check-offs can flow back to tasks.google.com."
-                : "Connect a Google account and your Google Tasks will mirror here."}
+              No open tasks. Add one above, or sync to pull from Google.
             </p>
           )}
+          {/* Collapsible recap of what's been checked off today.
+              Hidden entirely when there's nothing to show — no
+              "you haven't done anything" energy. */}
+          <CompletedTodaySection
+            tasks={completedToday.map((t) => ({
+              id: t.id,
+              title: t.title,
+              completed_at: t.completed_at,
+              source: t.source,
+            }))}
+          />
         </Panel>
 
         <Panel eyebrow="Reminders" title="Queue">

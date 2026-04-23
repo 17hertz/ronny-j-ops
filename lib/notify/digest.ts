@@ -31,11 +31,21 @@ export type DigestTask = {
   overdue?: boolean;
 };
 
+export type CompletedTaskSummary = {
+  title: string;
+};
+
 export type DigestInput = {
   /** Day label for the header, e.g. "Tue Apr 22". */
   dayLabel?: string;
   events: DigestEvent[];
   tasks: DigestTask[];
+  /**
+   * Tasks completed today. Rendered as an optional "Done:" line at the
+   * bottom of the digest. When empty, the line is omitted — no "nothing
+   * done today" energy. Used by the end-of-day recap SMS.
+   */
+  completed?: CompletedTaskSummary[];
   /** IANA zone. Defaults to America/New_York. */
   tz?: string;
 };
@@ -65,11 +75,25 @@ export function renderDigest(input: DigestInput): string {
           .map((t) => `${t.overdue ? "⚠ " : ""}${trim(t.title, 40)}`)
           .join("; ") + (remaining > 0 ? ` (+${remaining} more)` : "");
 
-  return [
+  const lines = [
     `Ronny J · ${header}`,
     `Today: ${eventsLine}`,
     `To do: ${tasksLine}`,
-  ].join("\n");
+  ];
+
+  // "Done:" section — only shown when there's something to celebrate.
+  // Capped at 5 with a "+N more" overflow, same treatment as tasks.
+  if (input.completed && input.completed.length > 0) {
+    const MAX_DONE = 5;
+    const shown = input.completed.slice(0, MAX_DONE);
+    const rest = input.completed.length - shown.length;
+    const doneLine =
+      shown.map((d) => trim(d.title, 40)).join("; ") +
+      (rest > 0 ? ` (+${rest} more)` : "");
+    lines.push(`Done: ${doneLine}`);
+  }
+
+  return lines.join("\n");
 }
 
 /**
