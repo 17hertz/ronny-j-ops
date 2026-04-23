@@ -40,6 +40,24 @@ export class SyncTokenInvalidError extends Error {
 }
 
 /**
+ * Thrown on 401 from Google. Caller should force-refresh the access token
+ * (ignoring our locally-stored expiry) and retry once. If it 401s again,
+ * the refresh token itself is dead and the user must reconnect.
+ *
+ * `body` is retained so the caller can log Google's error code — e.g.
+ *   { "error": { "code": 401, "status": "UNAUTHENTICATED",
+ *                "message": "Request had invalid authentication credentials..." } }
+ */
+export class UnauthorizedError extends Error {
+  readonly body: string;
+  constructor(body: string) {
+    super(`Google returned 401 Unauthorized: ${body}`);
+    this.name = "UnauthorizedError";
+    this.body = body;
+  }
+}
+
+/**
  * List events from a single calendar, paginating until exhausted.
  *
  * On the happy path this returns all events + the final `nextSyncToken`.
@@ -84,6 +102,10 @@ export async function listEvents(params: {
     });
 
     if (res.status === 410) throw new SyncTokenInvalidError();
+    if (res.status === 401) {
+      const body = await res.text();
+      throw new UnauthorizedError(body);
+    }
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Google events.list failed (${res.status}): ${body}`);

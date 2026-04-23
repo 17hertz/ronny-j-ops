@@ -6,15 +6,24 @@
  *   - Inngest cron            (once wired up; scoped to all accounts)
  *
  * Per-account flow:
- *   1. Refresh the access token if it's expired.
+ *   1. Refresh the access token if it's within REFRESH_BUFFER_SECONDS of
+ *      expiry. Rotated refresh tokens (when Google sends one) are persisted.
  *   2. Calendar: pull events with `listEvents` — incremental if we have a
- *      sync token, full otherwise. On 410 Gone, wipe the token and retry.
+ *      sync token, full otherwise.
+ *      On 410 Gone: wipe the sync token and retry with a full resync.
+ *      On 401:      force-refresh the access token (ignore local expiry)
+ *                   and retry once. A second 401 means the refresh token
+ *                   itself is dead — the user has to reconnect.
  *      Upsert active events; delete cancelled.
  *   3. Tasks (best effort): list every tasklist, pull tasks updated since
  *      our last remote timestamp, mirror into `google_tasks`.
  *      Tolerates missing scope — existing connections made before we added
  *      tasks.readonly won't have it; we skip and surface a reconnect hint.
  *   4. Save the new sync token back.
+ *
+ * Per-account failures are captured on SyncResult.error rather than thrown,
+ * so one bad connection doesn't kill syncs for the member's other accounts
+ * (or — in the cron path — for other members).
  *
  * We use the service-role client here because the `events` / `google_tasks`
  * tables have per-team-member RLS but this function may be invoked out-of-band
@@ -26,6 +35,7 @@ import {
   listEvents,
   toEventRow,
   SyncTokenInvalidError,
+  UnauthorizedError,
 } from "@/lib/google/calendar";
 import {
   listTaskLists,
@@ -57,6 +67,8 @@ export type SyncResult = {
     deleted: number;
     scopeMissing: boolean;
   };
+  /** Populated when this account failed; other accounts still ran. */
+  error?: string;
 };
 
 export async function syncAccountsForMember(
@@ -87,11 +99,65 @@ export async function syncAccountsForMember(
   if (acctsErr) throw new Error(`list accounts failed: ${acctsErr.message}`);
   if (!accounts || accounts.length === 0) return [];
 
+  // Soft-fail per account: one bad Google account (revoked token, scope
+  // mismatch, Cloud project API disabled) shouldn't kill syncs for the
+  // member's other accounts. Collect successes; let the caller surface
+  // failures via the returned SyncResult.error field.
   const results: SyncResult[] = [];
   for (const acct of accounts) {
-    results.push(await syncOneAccount(admin, acct, teamMemberId));
+    try {
+      results.push(await syncOneAccount(admin, acct, teamMemberId));
+    } catch (err) {
+      console.error(
+        "[sync] account failed",
+        acct.google_email,
+        err instanceof Error ? err.message : err
+      );
+      results.push({
+        googleEmail: acct.google_email,
+        calendarId: "primary",
+        upserted: 0,
+        deleted: 0,
+        fullResync: false,
+        tasks: { upserted: 0, deleted: 0, scopeMissing: false },
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   return results;
+}
+
+/**
+ * Call Google's refresh endpoint and persist the new access_token (+ rotated
+ * refresh_token if Google sent one). Returns the fresh access_token.
+ *
+ * Google *usually* returns the same refresh_token on refresh, but it CAN
+ * rotate it silently — if we don't persist the new one, the old one stops
+ * working and the user has to reconnect. Storing every returned refresh
+ * token is the safe move.
+ */
+async function refreshAndPersistToken(
+  admin: ReturnType<typeof createAdminClient>,
+  accountId: string,
+  refreshToken: string
+): Promise<string> {
+  const refreshed = await refreshAccessToken(refreshToken);
+  const newExpiresAt = new Date(
+    Date.now() + refreshed.expires_in * 1000
+  ).toISOString();
+  const patch: Record<string, unknown> = {
+    access_token: refreshed.access_token,
+    token_expires_at: newExpiresAt,
+    updated_at: new Date().toISOString(),
+  };
+  if (refreshed.refresh_token) {
+    patch.refresh_token = refreshed.refresh_token;
+  }
+  await (admin as any)
+    .from("google_calendar_accounts")
+    .update(patch)
+    .eq("id", accountId);
+  return refreshed.access_token;
 }
 
 type AccountRow = {
@@ -112,57 +178,75 @@ async function syncOneAccount(
   // Later we can discover additional calendars via /users/me/calendarList.
   const calendarId = "primary";
 
-  // Step 1: refresh token if needed.
+  // Step 1: refresh token proactively if it's near expiry. The 401-retry
+  // block below handles the case where Google rejects a token we think is
+  // still valid (which happens more often than you'd expect — tokens get
+  // revoked out-of-band when users change their Google password, revoke
+  // access, or when the OAuth app changes state).
   let accessToken = acct.access_token;
   const expiresAt = new Date(acct.token_expires_at).getTime();
   const now = Date.now();
   if (expiresAt - now < REFRESH_BUFFER_SECONDS * 1000) {
-    const refreshed = await refreshAccessToken(acct.refresh_token);
-    accessToken = refreshed.access_token;
-    const newExpiresAt = new Date(
-      Date.now() + refreshed.expires_in * 1000
-    ).toISOString();
-    await (admin as any)
-      .from("google_calendar_accounts")
-      .update({
-        access_token: accessToken,
-        token_expires_at: newExpiresAt,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", acct.id);
+    accessToken = await refreshAndPersistToken(
+      admin,
+      acct.id,
+      acct.refresh_token
+    );
   }
 
-  // Step 2: list events. Retry once with a full sync on 410 Gone.
+  // Step 2: list events. Two retry paths:
+  //   a) 410 Gone → sync token is ≥7 days stale; wipe it and do full resync.
+  //   b) 401     → access token is dead in Google's eyes even if our clock
+  //                says it's fresh. Force a refresh and try once more.
+  //                If it 401s again, the refresh_token is dead too — the
+  //                user has to reconnect. Don't loop forever.
   let listed;
   let fullResync = !acct.sync_token;
-  try {
-    listed = await listEvents({
-      accessToken,
+  const doList = (token: string, syncToken: string | null) =>
+    listEvents({
+      accessToken: token,
       calendarId,
-      syncToken: acct.sync_token,
-      timeMin: acct.sync_token
+      syncToken,
+      timeMin: syncToken
         ? undefined
         : new Date(
             Date.now() - INITIAL_WINDOW_DAYS * 24 * 60 * 60 * 1000
           ).toISOString(),
     });
+
+  try {
+    listed = await doList(accessToken, acct.sync_token);
   } catch (err) {
     if (err instanceof SyncTokenInvalidError) {
-      // Google expired our sync token (≥7 days stale). Wipe it and do
-      // a full resync — any upserts still dedupe via the unique index.
+      // 410 Gone — sync token is too stale. Wipe + full resync.
       fullResync = true;
       await (admin as any)
         .from("google_calendar_accounts")
         .update({ sync_token: null })
         .eq("id", acct.id);
-      listed = await listEvents({
-        accessToken,
-        calendarId,
-        syncToken: null,
-        timeMin: new Date(
-          Date.now() - INITIAL_WINDOW_DAYS * 24 * 60 * 60 * 1000
-        ).toISOString(),
-      });
+      listed = await doList(accessToken, null);
+    } else if (err instanceof UnauthorizedError) {
+      // Stored access_token was rejected. Force-refresh and try once.
+      // If this second call 401s, bubble up — the refresh token is dead.
+      console.warn(
+        "[sync] 401 on events.list, forcing refresh:",
+        err.body.slice(0, 200)
+      );
+      accessToken = await refreshAndPersistToken(
+        admin,
+        acct.id,
+        acct.refresh_token
+      );
+      try {
+        listed = await doList(accessToken, acct.sync_token);
+      } catch (retryErr) {
+        if (retryErr instanceof UnauthorizedError) {
+          throw new Error(
+            `Google auth failed after refresh — user must reconnect (${acct.google_email}): ${retryErr.body.slice(0, 200)}`
+          );
+        }
+        throw retryErr;
+      }
     } else {
       throw err;
     }
@@ -200,17 +284,40 @@ async function syncOneAccount(
     if (upsertErr) throw new Error(`events upsert failed: ${upsertErr.message}`);
     upserted = activeRows.length;
 
-    // Schedule reminders for every attendee already attached to each event.
-    // No-op for events with no attendees — calendar sync alone doesn't
-    // create attendees; the intake portal / manual attach does.
-    for (const row of upsertedRows ?? []) {
-      try {
-        await scheduleRemindersForEvent(row.id);
-      } catch (err) {
-        // A reminder scheduling hiccup shouldn't fail the whole sync —
-        // worst case the cron will re-schedule on the next pass.
-        console.error("[sync] scheduleReminders failed", row.id, err);
-      }
+    // Schedule reminders only for events that actually have attendees.
+    // Calendar sync alone doesn't create attendees (the intake portal /
+    // manual attach does), so the vast majority of upserted events here
+    // have zero attendees and would just be wasted round-trips.
+    //
+    // Earlier we called scheduleRemindersForEvent on EVERY upserted event
+    // in a serial for-loop; each call did 2 SELECTs before returning empty.
+    // On a 30-day first-sync that's ~600 serial round-trips — the reason
+    // a full resync took 2 minutes. One batched query + parallel scheduling
+    // for the small set that actually needs it is dramatically faster.
+    const upsertedIds = (upsertedRows ?? []).map((r) => r.id);
+    if (upsertedIds.length > 0) {
+      const { data: withAttendees } = (await (admin as any)
+        .from("event_attendees")
+        .select("event_id")
+        .in("event_id", upsertedIds)) as {
+        data: Array<{ event_id: string }> | null;
+      };
+      const eventIdsWithAttendees = Array.from(
+        new Set((withAttendees ?? []).map((r) => r.event_id))
+      );
+      // Run the real scheduling in parallel — each call makes a few DB
+      // round-trips + inngest.send, which shouldn't serialize.
+      await Promise.all(
+        eventIdsWithAttendees.map(async (id) => {
+          try {
+            await scheduleRemindersForEvent(id);
+          } catch (err) {
+            // A reminder scheduling hiccup shouldn't fail the whole sync —
+            // worst case the cron will re-schedule on the next pass.
+            console.error("[sync] scheduleReminders failed", id, err);
+          }
+        })
+      );
     }
   }
 

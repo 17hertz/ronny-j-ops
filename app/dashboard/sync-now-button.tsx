@@ -34,7 +34,19 @@ export function SyncNowButton() {
         upserted: number;
         deleted: number;
         tasks?: { upserted: number; deleted: number; scopeMissing: boolean };
+        error?: string;
       }>;
+      // syncAccountsForMember now soft-fails per account, so the top-level
+      // response can be ok:true even when one account 401'd. Surface the
+      // per-account error in that case — no use pretending the sync worked.
+      const failed = results.find((r) => r.error);
+      if (failed) {
+        setStatus({
+          kind: "error",
+          message: `${failed.googleEmail}: ${failed.error}`,
+        });
+        return;
+      }
       const totalEvents = results.reduce((s, r) => s + r.upserted, 0);
       const totalTasks = results.reduce(
         (s, r) => s + (r.tasks?.upserted ?? 0),
