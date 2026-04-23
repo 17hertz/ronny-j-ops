@@ -32,6 +32,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { generateInvoicePdf } from "@/lib/invoices/generate-pdf";
+import { notifyAdminNewInvoice } from "@/lib/invoices/notifications";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -360,6 +361,18 @@ async function storeInvoice(args: {
       { status: 500 }
     );
   }
+
+  // Fire-and-forget admin alert. Don't await — the vendor is already staring
+  // at a spinner, and an email blip shouldn't make the submission look failed.
+  // notifyAdminNewInvoice swallows its own errors into console.error.
+  void notifyAdminNewInvoice({
+    invoiceId: inserted.id,
+    invoiceNumber: args.invoiceNumber,
+    vendorLegalName: args.vendor.legal_name,
+    amountCents: args.invoiceAmountCents,
+    description: args.invoiceDescription,
+    generatedBySystem: args.generatedBySystem,
+  });
 
   return NextResponse.json({ ok: true, invoiceId: inserted.id });
 }

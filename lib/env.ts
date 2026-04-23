@@ -33,6 +33,11 @@ const serverSchema = z.object({
   // real mailbox so a human sees them (e.g. a client texting "running late").
   RESEND_REPLY_TO: z.string().email().optional(),
 
+  // Inbox that gets admin-facing notifications (new invoice submitted, vendor
+  // application submitted, etc.). Comma-separated list is fine — we split on
+  // commas before sending. If unset, admin notifications are silently skipped.
+  ADMIN_NOTIFY_EMAIL: z.string().optional(),
+
   // Feature flags — SMS stays off until A2P 10DLC registration clears.
   SMS_ENABLED: z
     .string()

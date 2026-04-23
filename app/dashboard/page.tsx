@@ -274,14 +274,30 @@ export default async function DashboardPage() {
         </div>
       </header>
 
-      <section className="mt-12">
-        <p className="font-mono text-xs uppercase tracking-[0.3em] text-brand">
-          Dashboard
-        </p>
-        <h1 className="mt-4 font-display text-5xl leading-tight">
-          Today&apos;s{" "}
-          <span className="italic text-brand">schedule</span>
-        </h1>
+      <section className="mt-12 flex items-end justify-between gap-6">
+        <div>
+          <p className="font-mono text-xs uppercase tracking-[0.3em] text-brand">
+            Dashboard
+          </p>
+          <h1 className="mt-4 font-display text-5xl leading-tight">
+            Today&apos;s{" "}
+            <span className="italic text-brand">schedule</span>
+          </h1>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <Link
+            href="/dashboard/team/invite"
+            className="rounded-md border border-neutral-800 px-4 py-2 text-sm text-neutral-300 transition hover:border-brand hover:text-brand"
+          >
+            + Add teammate
+          </Link>
+          <Link
+            href="/dashboard/chat"
+            className="rounded-md border border-brand bg-brand px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
+          >
+            Ask the ops agent →
+          </Link>
+        </div>
       </section>
 
       <div className="mt-12 grid gap-6 md:grid-cols-2">
