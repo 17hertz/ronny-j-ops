@@ -128,18 +128,50 @@ const tools: Anthropic.Tool[] = [
   },
 ];
 
-const SYSTEM = `You are an SMS command parser for Ronny J Ops, a booking / operations app.
+/**
+ * Build the system prompt with the sender's current time injected in
+ * their timezone, not the server's. Critical for relative expressions
+ * like "tomorrow noon" — if Jason (PT) texts at 11pm PT, his "tomorrow"
+ * is one PT day ahead; using the server's UTC clock would land it on
+ * the wrong day.
+ */
+function buildSystemPrompt(senderTz: string): string {
+  // ISO with offset for the sender's wall clock. Example output:
+  //   "2026-04-23T14:05:00-07:00"
+  // Constructed via Intl because JS Date has no native "ISO in zone".
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: senderTz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+  const localIso = `${get("year")}-${get("month")}-${get("day")}T${get(
+    "hour"
+  )}:${get("minute")}:${get("second")}`;
+
+  return `You are an SMS command parser for Ronny J Ops, a booking / operations app.
 You receive one short text message and MUST pick exactly one tool to invoke.
-Current date/time: ${new Date().toISOString()} (America/New_York is our operational timezone).
+Sender's current local time: ${localIso} (timezone: ${senderTz}).
 
 Rules:
 - Only emit tool calls — never write prose.
 - If the message is ambiguous, prefer 'help' over 'unknown'.
-- For dates like "Friday 1pm", resolve to the NEXT upcoming occurrence in America/New_York.
+- For dates like "Friday 1pm" or "tomorrow noon", resolve to the NEXT upcoming occurrence in the SENDER's timezone (${senderTz}).
+- When emitting starts_at / ends_at / due_at, produce a bare ISO like "2026-04-24T12:00:00" (no Z, no offset). The dispatcher combines it with the sender's timezone when pushing to Google.
 - Keep extracted titles concise — strip command prefixes like "add todo:".
 - Never invent due dates. If the user didn't say when, omit due_at.`;
+}
 
-export async function parseIntent(message: string): Promise<ParsedIntent> {
+export async function parseIntent(
+  message: string,
+  opts: { senderTz: string } = { senderTz: "America/New_York" }
+): Promise<ParsedIntent> {
   // Pre-flight spend check. If we've hit the cap, skip the LLM entirely —
   // the dispatcher will reply with a graceful "paused" message.
   const check = await preflightSpendCheck();
@@ -160,7 +192,7 @@ export async function parseIntent(message: string): Promise<ParsedIntent> {
     const response = await client().messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM,
+      system: buildSystemPrompt(opts.senderTz),
       tools,
       // Force the model to use a tool. No free-form replies.
       tool_choice: { type: "any" },

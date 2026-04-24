@@ -83,13 +83,14 @@ export async function POST(request: Request) {
   // ---- 3. Find the sender (if they're one of us).
   const { data: member } = (await (admin as any)
     .from("team_members")
-    .select("id, full_name, sms_command_enabled")
+    .select("id, full_name, sms_command_enabled, timezone")
     .eq("phone", fromE164)
     .maybeSingle()) as {
     data: {
       id: string;
       full_name: string;
       sms_command_enabled: boolean;
+      timezone: string;
     } | null;
   };
 
@@ -164,6 +165,11 @@ export async function POST(request: Request) {
     });
   }
 
+  // Sender's timezone drives parser date-math ("tomorrow noon") AND
+  // digest / confirmation rendering. Falls back to the operational
+  // default if the row predates the column.
+  const senderTz = member.timezone || "America/New_York";
+
   // ---- 6. Short-circuit common keywords (no LLM burn) --------------
   const lowered = body.toLowerCase().trim();
   let intent: ParsedIntent;
@@ -175,11 +181,11 @@ export async function POST(request: Request) {
     intent = { kind: "get_digest" };
   } else {
     // ---- 7. Full parser -------------------------------------------
-    intent = await parseIntent(body);
+    intent = await parseIntent(body, { senderTz });
   }
 
   // ---- 8. Dispatch -------------------------------------------------
-  const outcome = await dispatchIntent(intent, member.id);
+  const outcome = await dispatchIntent(intent, member.id, senderTz);
 
   // ---- 9. Audit + reply --------------------------------------------
   await auditInbound(admin, {

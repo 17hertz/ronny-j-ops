@@ -58,11 +58,21 @@ export default async function DashboardPage({
   // app/api/google/callback/route.ts.
   const { data: teamMember } = (await supabase
     .from("team_members")
-    .select("id, full_name, role")
+    .select("id, full_name, role, timezone")
     .eq("auth_user_id", user.id)
     .maybeSingle()) as {
-    data: { id: string; full_name: string; role: string } | null;
+    data: {
+      id: string;
+      full_name: string;
+      role: string;
+      timezone: string;
+    } | null;
   };
+
+  // Viewer's timezone — drives day grouping + time rendering everywhere
+  // on this dashboard so Jason (PT) and Ronny (ET) each see their own
+  // local wall-clock view of the same underlying event data.
+  const viewerTz = teamMember?.timezone ?? "America/New_York";
 
   if (!teamMember) {
     // Before showing "not on the team", check if this auth user is actually a
@@ -208,8 +218,12 @@ export default async function DashboardPage({
     NonNullable<typeof upcomingEvents>[number][]
   >();
   // Group only the paged slice — each page's by-day view is independent.
+  // Using viewerTz (not the event's own stored timezone) so the dashboard
+  // buckets events into the viewer's calendar days — matches Google
+  // Calendar's UX where "tomorrow at noon PT" shows on PT-tomorrow
+  // regardless of the event's intrinsic zone.
   for (const ev of pagedUpcomingEvents) {
-    const key = localDateKey(ev.starts_at, ev.timezone);
+    const key = localDateKey(ev.starts_at, viewerTz);
     const list = eventsByDay.get(key) ?? [];
     list.push(ev);
     eventsByDay.set(key, list);
@@ -518,7 +532,10 @@ export default async function DashboardPage({
               {eventDayKeys.map((dayKey) => (
                 <div key={dayKey}>
                   <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-neutral-600">
-                    {formatDayHeader(dayKey)}
+                    {/* Label computed in the VIEWER's tz so Jason (PT)
+                        sees "Today" based on his local midnight, while
+                        Ronny (ET) sees his. Matches the grouping above. */}
+                    {formatDayHeader(dayKey, viewerTz)}
                   </p>
                   <ul className="mt-2 space-y-2">
                     {eventsByDay.get(dayKey)!.map((ev) => (
@@ -544,7 +561,7 @@ export default async function DashboardPage({
                               {formatEventWindow(
                                 ev.starts_at,
                                 ev.ends_at,
-                                ev.timezone
+                                viewerTz
                               )}
                             </span>
                           </div>
@@ -878,20 +895,53 @@ function localDateKey(isoTimestamp: string, timezone: string | null): string {
 
 /**
  * Human-readable header for a day group: "Today", "Tomorrow", or
- * "Thu, Apr 24" style. Input is the YYYY-MM-DD key produced above.
+ * "Thu, Apr 24" style. Input is the YYYY-MM-DD key from localDateKey.
+ *
+ * Critical: this runs in a Server Component, so `new Date()` is the
+ * server's clock (Vercel = UTC). We MUST compare in the same timezone
+ * that `localDateKey` used to produce the key (America/New_York by
+ * default), otherwise late-night events get mislabeled. Example: at
+ * 11pm ET on Apr 23 (= 3am UTC Apr 24), a Apr 24 2pm ET event would
+ * have dayKey='2026-04-24'. If we compute "today" as the server's
+ * local-UTC date, today === 2026-04-24 → label becomes "Today" even
+ * though in ET it's actually tomorrow.
+ *
+ * Fix: compute today/tomorrow as YYYY-MM-DD STRINGS in the same tz
+ * and compare them directly — no Date arithmetic, no tz boundary bugs.
+ *
+ * `tz` defaults to America/New_York (our operational zone). When we
+ * later add per-member timezones, thread the viewer's zone through
+ * here instead.
  */
-function formatDayHeader(dayKey: string): string {
-  // Parse the key as a date in the *viewer's* local zone so the "Today" /
-  // "Tomorrow" labels match what the user expects to see on their wall clock.
+function formatDayHeader(dayKey: string, tz = "America/New_York"): string {
+  const now = new Date();
+  const todayKey = now.toLocaleDateString("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  // +24h anchored on "now" works across normal days; the ±1-hour
+  // wobble around DST changes only matters if you're rendering at
+  // 1am on the DST-shift morning — tolerable for this UI.
+  const tomorrowKey = new Date(
+    now.getTime() + 24 * 60 * 60 * 1000
+  ).toLocaleDateString("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  if (dayKey === todayKey) return "Today";
+  if (dayKey === tomorrowKey) return "Tomorrow";
+
+  // Anchor the display Date at noon UTC so the day never wobbles across
+  // midnight when re-formatted in `tz`.
   const [y, m, d] = dayKey.split("-").map(Number);
-  const day = new Date(y, m - 1, d);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const msPerDay = 24 * 60 * 60 * 1000;
-  const diff = Math.round((day.getTime() - today.getTime()) / msPerDay);
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Tomorrow";
+  const day = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
   return day.toLocaleDateString("en-US", {
+    timeZone: tz,
     weekday: "short",
     month: "short",
     day: "numeric",
@@ -922,10 +972,16 @@ function formatTaskDue(dueAt: string | null): string {
  * event spans a full calendar day (Google all-day events come in as 00:00
  * to 00:00 the next day).
  */
+/**
+ * Render an event's time range in the VIEWER's timezone — not the
+ * event's stored timezone. Matches Google Calendar's UX: when you
+ * open an event created in another zone, you see it translated to
+ * your local wall clock, not the organizer's.
+ */
 function formatEventWindow(
   startsAt: string,
   endsAt: string,
-  timezone: string
+  viewerTz: string
 ): string {
   const start = new Date(startsAt);
   const end = new Date(endsAt);
@@ -936,7 +992,7 @@ function formatEventWindow(
     d.toLocaleTimeString("en-US", {
       hour: "numeric",
       minute: "2-digit",
-      timeZone: timezone || "America/New_York",
+      timeZone: viewerTz || "America/New_York",
     });
   return `${fmt(start)} – ${fmt(end)}`;
 }

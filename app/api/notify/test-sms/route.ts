@@ -36,9 +36,9 @@ import { listCompletedTodayForMember } from "@/lib/tasks/service";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-// Operational timezone. We don't have per-member tz yet — when we add it,
-// pull from team_members.timezone and default here.
-const TZ = "America/New_York";
+// Operational fallback when a member row predates the timezone column.
+// The logic below prefers team_members.timezone and falls back to this.
+const FALLBACK_TZ = "America/New_York";
 
 type EventRow = {
   title: string;
@@ -78,10 +78,15 @@ export async function POST(request: Request) {
 
   const { data: member } = (await sb
     .from("team_members")
-    .select("id, phone, full_name")
+    .select("id, phone, full_name, timezone")
     .eq("auth_user_id", user.id)
     .maybeSingle()) as {
-    data: { id: string; phone: string | null; full_name: string } | null;
+    data: {
+      id: string;
+      phone: string | null;
+      full_name: string;
+      timezone: string;
+    } | null;
   };
 
   if (!member) {
@@ -101,7 +106,10 @@ export async function POST(request: Request) {
   // identity has already been established above.
   const admin = createAdminClient();
 
-  const { startUtc, endUtc } = todayBoundsUtc(TZ);
+  // Viewer's tz drives "today" bounds + digest rendering. Ronny on ET
+  // and Jason on PT each see today-in-their-zone when they hit this.
+  const viewerTz = member.timezone || FALLBACK_TZ;
+  const { startUtc, endUtc } = todayBoundsUtc(viewerTz);
 
   // Today's events — any event whose start falls in today's zone.
   // Privacy filter: viewer's own events + team-shared events only.
@@ -142,13 +150,13 @@ export async function POST(request: Request) {
   // the morning SMS and end-of-day SMS tell the same story.
   const completedRows = await listCompletedTodayForMember({
     teamMemberId: member.id,
-    tz: TZ,
+    tz: viewerTz,
   });
   const completed: CompletedTaskSummary[] = completedRows.map((t) => ({
     title: t.title,
   }));
 
-  const body = renderDigest({ events, tasks, completed, tz: TZ });
+  const body = renderDigest({ events, tasks, completed, tz: viewerTz });
 
   // Dispatch on channel. Note: WhatsApp has no SMS_ENABLED equivalent,
   // so `skipped` can never come back from that path. SMS can still short-

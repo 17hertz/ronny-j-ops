@@ -32,7 +32,7 @@ import {
 } from "@/lib/notify/digest";
 import type { ParsedIntent } from "./parse";
 
-const TZ = "America/New_York";
+const DEFAULT_TZ = "America/New_York";
 
 export type DispatchOutcome = {
   replyText: string;
@@ -42,9 +42,15 @@ export type DispatchOutcome = {
   error?: string;
 };
 
+/**
+ * `senderTz` is the team_member's personal timezone — used for digest
+ * formatting, event timezone stamping, and the reply time labels.
+ * Falls back to America/New_York (legacy default) when unspecified.
+ */
 export async function dispatchIntent(
   intent: ParsedIntent,
-  teamMemberId: string
+  teamMemberId: string,
+  senderTz: string = DEFAULT_TZ
 ): Promise<DispatchOutcome> {
   switch (intent.kind) {
     case "create_task":
@@ -52,7 +58,7 @@ export async function dispatchIntent(
     case "complete_task":
       return await handleCompleteTask(intent.titleMatch, teamMemberId);
     case "get_digest":
-      return await handleDigest(teamMemberId);
+      return await handleDigest(teamMemberId, senderTz);
     case "help":
       return { replyText: HELP_TEXT, actionStatus: "done", intent: "help" };
     case "create_event":
@@ -61,7 +67,8 @@ export async function dispatchIntent(
         intent.startsAt,
         intent.endsAt ?? null,
         intent.location ?? null,
-        teamMemberId
+        teamMemberId,
+        senderTz
       );
     case "unknown":
       return {
@@ -187,10 +194,13 @@ async function handleCompleteTask(
   }
 }
 
-async function handleDigest(teamMemberId: string): Promise<DispatchOutcome> {
+async function handleDigest(
+  teamMemberId: string,
+  senderTz: string
+): Promise<DispatchOutcome> {
   try {
     const admin = createAdminClient();
-    const { startUtc, endUtc } = todayBoundsUtc(TZ);
+    const { startUtc, endUtc } = todayBoundsUtc(senderTz);
 
     // Privacy filter: viewer's own events + team-shared events only.
     const { data: eventRows } = (await (admin as any)
@@ -225,13 +235,13 @@ async function handleDigest(teamMemberId: string): Promise<DispatchOutcome> {
 
     const completedRows = await listCompletedTodayForMember({
       teamMemberId,
-      tz: TZ,
+      tz: senderTz,
     });
     const completed: CompletedTaskSummary[] = completedRows.map((t) => ({
       title: t.title,
     }));
 
-    const body = renderDigest({ events, tasks, completed, tz: TZ });
+    const body = renderDigest({ events, tasks, completed, tz: senderTz });
     return {
       replyText: body,
       actionStatus: "done",
@@ -253,7 +263,8 @@ async function handleCreateEvent(
   startsAt: string,
   endsAt: string | null,
   location: string | null,
-  teamMemberId: string
+  teamMemberId: string,
+  senderTz: string
 ): Promise<DispatchOutcome> {
   try {
     const event = await createEvent({
@@ -262,14 +273,14 @@ async function handleCreateEvent(
       location,
       startsAt,
       endsAt,
-      timezone: TZ,
+      timezone: senderTz,
       source: "sms",
     });
-    // Format a friendly confirmation — the parser sometimes produces
-    // ISO with a Z suffix (UTC) or without (local). Either way, render
-    // in ET for the reply since that's Ronny's operational zone.
+    // Format the confirmation in the sender's zone so the reply matches
+    // what they expected. The parser produces a bare ISO in the sender's
+    // local clock; we re-render it via the zone for the reply text.
     const when = new Date(event.starts_at).toLocaleString("en-US", {
-      timeZone: TZ,
+      timeZone: senderTz,
       weekday: "short",
       month: "short",
       day: "numeric",
