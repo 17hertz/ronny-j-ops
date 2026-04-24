@@ -265,3 +265,91 @@ app is further along / revenue is coming in. Oldest items at the top.
     Don't ship without explicit user request — the default behavior
     (local-only) is safe and less surprising.
 
+
+[ ] cancel_event tool for Claude SMS
+    Added: 2026-04-24
+    Context: Jason asked for Claude to be able to make changes to events
+    and tasks via SMS. Update tools are shipped; cancel_task is shipped
+    (existing service has cancelTask). Cancel_event is the remaining gap
+    and needs more plumbing:
+      1. Add `cancelled_at timestamptz` column to public.events (soft
+         delete — audit preserved).
+      2. Extend eventPushRunner with a CANCEL branch: if cancelled_at
+         is set AND google_event_id is present, call deleteGoogleEvent
+         (already exists in lib/google/calendar.ts). Then mark the row
+         push_status='pushed'.
+      3. Add lib/events/service.ts cancelEvent(eventId): updates local
+         row with cancelled_at=now(), emits event/push-to-google-calendar.
+      4. Add cancel_event tool in lib/agent/tools.ts; signature mirrors
+         cancel_task. Claude uses it when user says "drop Saturday's
+         show" or "never mind on tonight".
+      5. Update the privacy-filtered queries (dashboard up-next,
+         digest, etc.) to filter out cancelled rows (cancelled_at IS NULL).
+    Low priority — user can delete events in Google Calendar directly
+    and the next sync pulls the deletion into our events table.
+
+
+[ ] Email ingestion via Resend inbound (forwarding-based, no Gmail OAuth)
+    Added: 2026-04-24
+    Why this is the right shape (not Gmail API + not Zapier):
+      - Gmail OAuth with gmail.readonly is a "restricted" scope. In
+        Published mode it needs CASA — an independent security audit
+        costing $15K-30K/year for a small app. Not proportional to
+        two users.
+      - Testing mode bypasses CASA but issues 7-day-expiring refresh
+        tokens. We already learned that the hard way earlier in this
+        project; weekly re-auth is a dealbreaker.
+      - Zapier works (their Gmail connector is pre-verified) but
+        costs $240-600/yr and adds a third-party TOS in the chain.
+      - Resend is free, already in the stack for outbound. Email at
+        the MX level = pure SMTP, Google isn't involved on our side.
+    How it works:
+      - User forwards emails from Gmail to an address on a subdomain
+        we control (e.g. ronny@inbox.ronnyjlistenup.com). Resend
+        catches them, POSTs to a webhook we build. No OAuth, no scope
+        verification.
+      - User's own Gmail stays untouched. They choose what to forward.
+    Prerequisites (Jason to decide):
+      - Need DNS control over a domain: 17hertz.io or
+        ronnyjlistenup.com. ronnyj.17hertz.com is a Vercel subdomain;
+        MX records have to live on the parent apex or a dedicated
+        subdomain of a domain Jason registers directly.
+      - Gmail requires a one-time "verify forwarding destination" step
+        where Google emails a code to the destination and the user
+        pastes it into Gmail settings. Surface that code via a
+        dashboard page OR a Claude SMS tool so Ronny doesn't have to
+        log into Resend.
+    Implementation scope:
+      1. Configure Resend inbound: MX records + inbound route pointing
+         to our webhook URL. 5 min DNS + 5 min Resend setup.
+      2. Migration: public.inbound_emails table (id, team_member_id,
+         from_address, to_address, subject, body_text, body_html,
+         received_at, raw_headers jsonb, attachments_meta jsonb) +
+         public.inbound_email_aliases (team_member_id -> local_part
+         like "ronny" so ronny@inbox... routes to the right member).
+      3. POST /api/webhooks/resend-inbound: verifies Resend signature,
+         parses MIME, resolves recipient -> team_member via alias
+         table, inserts.
+      4. Claude tools in lib/agent/tools.ts:
+         - search_inbound_emails(query, days_ago?, from?) — read
+         - get_inbound_email(id) — read
+      5. Update chat-passthrough system prompt so Claude knows to
+         search email when the user says "that email from X about Y"
+         or "add the details from the promoter's email."
+      6. Dashboard page /dashboard/inbox (simple list + search) so
+         Jason can eyeball what's landed.
+      7. Ronny's one-time setup: in Gmail Settings -> Filters,
+         create rule "From: promoter@*, venue@*, specific senders"
+         -> Forward to ronny@inbox.ronnyjlistenup.com. Verify with
+         the code. Iterate on filter breadth over time.
+    Token cost note: each email in Claude's context is 500-5000
+    tokens. Cap max-fetched-per-question at 3, use Gmail-style search
+    operators in search_inbound_emails (from:, newer_than:,
+    has:attachment) to narrow BEFORE fetching bodies.
+    Risk: attachment handling. First pass = ignore attachments, store
+    metadata only. If Ronny needs contract PDFs parsed, that's a
+    follow-up (put it through a PDF text extractor, feed to Claude as
+    additional context).
+    Total build estimate: ~3-4 hours of code + ~30 min setup on
+    Jason/Ronny's side. Don't attempt when fried.
+

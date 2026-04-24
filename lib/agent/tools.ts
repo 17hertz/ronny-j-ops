@@ -24,6 +24,13 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  updateTask,
+  completeTask as completeTaskService,
+  cancelTask as cancelTaskService,
+} from "@/lib/tasks/service";
+import { updateEvent } from "@/lib/events/service";
+import { naiveLocalToUtcIso } from "@/lib/time/naive-iso";
 
 type ToolDef = {
   schema: Anthropic.Tool;
@@ -508,6 +515,246 @@ const unassignVendorFromEvent: ToolDef = {
   },
 };
 
+// ---------- list_tasks ------------------------------------------------
+
+const listTasks: ToolDef = {
+  schema: {
+    name: "list_tasks",
+    description:
+      "List tasks for a specific team member. Use when the user asks " +
+      "'what's on my todo list?', 'any open tasks?', 'what did I finish " +
+      "today?'. Optionally filter by status (needsAction, completed). " +
+      "Pass include_completed=true to include recently-completed items.",
+    input_schema: {
+      type: "object",
+      properties: {
+        team_member_id: {
+          type: "string",
+          description: "UUID of the team_member whose tasks to list.",
+        },
+        status: {
+          type: "string",
+          enum: ["needsAction", "completed", "cancelled"],
+          description: "Optional filter. Default: needsAction only.",
+        },
+        limit: {
+          type: "number",
+          description: "Max rows. Default 20, cap 100.",
+        },
+      },
+      required: ["team_member_id"],
+    },
+  },
+  run: async (input: {
+    team_member_id: string;
+    status?: string;
+    limit?: number;
+  }) => {
+    const admin = createAdminClient();
+    const limit = Math.min(100, input.limit ?? 20);
+    let q = (admin as any)
+      .from("tasks")
+      .select("id, title, notes, status, due_at, completed_at, source")
+      .eq("team_member_id", input.team_member_id)
+      .order("due_at", { ascending: true, nullsFirst: false })
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (input.status) q = q.eq("status", input.status);
+    else q = q.eq("status", "needsAction");
+    const { data, error } = await q;
+    if (error) return { error: error.message };
+    return { count: (data ?? []).length, tasks: data ?? [] };
+  },
+};
+
+// ---------- update_task -----------------------------------------------
+
+const updateTaskTool: ToolDef = {
+  schema: {
+    name: "update_task",
+    description:
+      "Edit a task's title, notes, or due date. Use when the user says " +
+      "'rename that task to X' or 'push the deadline to tomorrow'. " +
+      "Queues a push to Google Tasks automatically. Get the task_id " +
+      "from list_tasks first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "UUID of the task to edit." },
+        title: { type: "string", description: "New title (optional)." },
+        notes: {
+          type: "string",
+          description: "New notes/body. Pass empty string to clear.",
+        },
+        due_at: {
+          type: "string",
+          description:
+            "New due date-time. Prefer full ISO with Z. If you emit a " +
+            "naive wall-clock like '2026-04-25T17:00:00', also set " +
+            "due_at_timezone so we interpret it correctly.",
+        },
+        due_at_timezone: {
+          type: "string",
+          description:
+            "IANA tz (e.g. 'America/Los_Angeles'). Used when due_at is " +
+            "naive. Prefer passing the SENDER's timezone.",
+        },
+      },
+      required: ["task_id"],
+    },
+  },
+  run: async (input: {
+    task_id: string;
+    title?: string;
+    notes?: string;
+    due_at?: string;
+    due_at_timezone?: string;
+  }) => {
+    const dueAt = input.due_at
+      ? naiveLocalToUtcIso(input.due_at, input.due_at_timezone || "America/New_York")
+      : undefined;
+    try {
+      const task = await updateTask({
+        taskId: input.task_id,
+        title: input.title,
+        notes: input.notes === undefined ? undefined : input.notes,
+        dueAt: dueAt,
+      });
+      return { ok: true, task };
+    } catch (err: any) {
+      return { error: err?.message ?? "update failed" };
+    }
+  },
+};
+
+// ---------- complete_task ---------------------------------------------
+
+const completeTaskTool: ToolDef = {
+  schema: {
+    name: "complete_task",
+    description:
+      "Mark a task as done. Queues a push to Google Tasks. Idempotent. " +
+      "Use when the user says 'mark X done' or 'I finished Y'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "UUID of the task." },
+      },
+      required: ["task_id"],
+    },
+  },
+  run: async (input: { task_id: string }) => {
+    try {
+      const task = await completeTaskService(input.task_id);
+      return { ok: true, task };
+    } catch (err: any) {
+      return { error: err?.message ?? "complete failed" };
+    }
+  },
+};
+
+// ---------- cancel_task -----------------------------------------------
+
+const cancelTaskTool: ToolDef = {
+  schema: {
+    name: "cancel_task",
+    description:
+      "Soft-delete / cancel a task. Local row stays for audit but the " +
+      "task is removed from Google Tasks. Use for 'drop that todo' or " +
+      "'never mind on X'. Confirm with the user first for destructive " +
+      "asks where they might have meant complete_task.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "UUID of the task." },
+      },
+      required: ["task_id"],
+    },
+  },
+  run: async (input: { task_id: string }) => {
+    try {
+      const task = await cancelTaskService(input.task_id);
+      return { ok: true, task };
+    } catch (err: any) {
+      return { error: err?.message ?? "cancel failed" };
+    }
+  },
+};
+
+// ---------- update_event ----------------------------------------------
+
+const updateEventTool: ToolDef = {
+  schema: {
+    name: "update_event",
+    description:
+      "Edit an event's title, time window, location, or notes. Queues " +
+      "a PATCH to Google Calendar so the change syncs to everyone's " +
+      "phone. Get event_id from list_events first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: { type: "string", description: "UUID of the event." },
+        title: { type: "string" },
+        description: { type: "string" },
+        location: { type: "string" },
+        starts_at: {
+          type: "string",
+          description:
+            "New start time. Prefer full UTC ISO with Z. If you emit a " +
+            "naive wall-clock, also set the_timezone so we interpret it.",
+        },
+        ends_at: {
+          type: "string",
+          description: "New end time. Same format rules as starts_at.",
+        },
+        the_timezone: {
+          type: "string",
+          description:
+            "IANA tz (e.g. 'America/Los_Angeles'). Applied to any naive " +
+            "starts_at/ends_at. Prefer the SENDER's timezone.",
+        },
+      },
+      required: ["event_id"],
+    },
+  },
+  run: async (input: {
+    event_id: string;
+    title?: string;
+    description?: string;
+    location?: string;
+    starts_at?: string;
+    ends_at?: string;
+    the_timezone?: string;
+  }) => {
+    const tz = input.the_timezone || "America/New_York";
+    const startsAt = input.starts_at
+      ? naiveLocalToUtcIso(input.starts_at, tz)
+      : undefined;
+    const endsAt = input.ends_at
+      ? naiveLocalToUtcIso(input.ends_at, tz)
+      : undefined;
+    try {
+      // The service handles pushing via Inngest. We don't track the
+      // acting team_member here (no session context in tool runner),
+      // so pass a best-effort placeholder — the push worker looks up
+      // the event's existing google_account_id for authentication.
+      const event = await updateEvent({
+        eventId: input.event_id,
+        title: input.title,
+        description: input.description === undefined ? undefined : input.description,
+        location: input.location === undefined ? undefined : input.location,
+        startsAt,
+        endsAt,
+        timezone: input.the_timezone,
+        teamMemberId: "",
+      });
+      return { ok: true, event };
+    } catch (err: any) {
+      return { error: err?.message ?? "update failed" };
+    }
+  },
+};
+
 // ---------- Registry ---------------------------------------------------
 
 export const tools: Record<string, ToolDef> = {
@@ -521,6 +768,11 @@ export const tools: Record<string, ToolDef> = {
   unassign_vendor_from_event: unassignVendorFromEvent,
   list_pending_reminders: listPendingReminders,
   draft_vendor_message: draftVendorMessage,
+  list_tasks: listTasks,
+  update_task: updateTaskTool,
+  complete_task: completeTaskTool,
+  cancel_task: cancelTaskTool,
+  update_event: updateEventTool,
 };
 
 export const toolSchemas: Anthropic.Tool[] = Object.values(tools).map(

@@ -27,6 +27,7 @@ import {
   type ServiceCategoryId,
 } from "@/lib/vendors/service-categories";
 import { ReviewActions } from "./review-actions";
+import { RevealBankingButton } from "./reveal-banking-button";
 
 export const dynamic = "force-dynamic";
 
@@ -256,6 +257,17 @@ export default async function VendorReviewPage({
               )}
             </Dd>
           </Dl>
+          {/* Reveal button — decrypts server-side on click, displays
+              plaintext for 30s, auto-hides. Every reveal lands in the
+              banking_reveals audit table so we always know who looked
+              at what and when. */}
+          {(vendor.ach_account_last4 || vendor.tax_id_last4) && (
+            <RevealBankingButton
+              vendorId={vendor.id}
+              hasAch={!!vendor.ach_account_last4}
+              hasTaxId={!!vendor.tax_id_last4}
+            />
+          )}
         </Card>
 
         <Card title="Secondary payment (optional)">

@@ -34,6 +34,7 @@ import {
   askClaudePassthrough,
   askGptPassthrough,
 } from "./chat-passthrough";
+import { naiveLocalToUtcIso } from "@/lib/time/naive-iso";
 import type { ParsedIntent } from "./parse";
 
 const DEFAULT_TZ = "America/New_York";
@@ -362,6 +363,7 @@ async function handleAskClaude(
   const res = await askClaudePassthrough(question, {
     senderTz,
     senderName,
+    senderTeamMemberId: teamMemberId,
   });
   return {
     replyText: res.replyText,
@@ -388,59 +390,3 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
 
-/**
- * Convert a naive ISO timestamp (no Z, no offset) produced by the
- * Haiku parser into a proper UTC ISO, interpreting the wall-clock time
- * in the sender's timezone.
- *
- * Why this exists: the parser emits strings like "2026-04-25T14:00:00"
- * meaning "2pm in the sender's zone." If we pass that through raw to
- * Postgres (timestamptz column, session = UTC), it stores as 14:00 UTC,
- * which is 7am PT → Ronny's Saturday 2pm show ends up on his phone at
- * 7am. Converting here first keeps starts_at honest: the column really
- * is UTC, and downstream code doesn't need to know the origin zone.
- *
- * If the input already has a Z or numeric offset we trust it — Claude
- * sometimes produces offset-qualified ISOs even when we ask it not to,
- * which is also correct UTC.
- */
-function naiveLocalToUtcIso(input: string, tz: string): string {
-  if (/Z$|[+-]\d{2}:?\d{2}$/.test(input)) return input;
-
-  // Parse YYYY-MM-DDTHH:MM(:SS)?
-  const m = input.match(
-    /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/
-  );
-  if (!m) {
-    // Fall back to Date parsing — will treat as local to server zone,
-    // which on Vercel is UTC. Not ideal but better than throwing.
-    return new Date(input).toISOString();
-  }
-  const [, yy, mm, dd, hh, mi, ss = "0"] = m;
-  const y = Number(yy),
-    mo = Number(mm) - 1,
-    d = Number(dd),
-    h = Number(hh),
-    min = Number(mi),
-    s = Number(ss);
-
-  // Anchor the same wall-clock in UTC, then measure how that UTC instant
-  // looks in the target tz. The difference is the tz's UTC offset at
-  // that moment — handles DST automatically via Intl.
-  const asUtc = new Date(Date.UTC(y, mo, d, h, min, s));
-  const hourInTz = Number(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      hour: "2-digit",
-      hour12: false,
-    }).format(asUtc)
-  );
-  // If UTC wall = 14 and tz wall = 7, tz is UTC-7. We want a UTC
-  // timestamp that renders as 14 in the tz — so shift by +7 hours.
-  let offsetHours = h - hourInTz;
-  if (offsetHours < -12) offsetHours += 24;
-  if (offsetHours > 12) offsetHours -= 24;
-
-  const corrected = new Date(asUtc.getTime() + offsetHours * 60 * 60 * 1000);
-  return corrected.toISOString();
-}
