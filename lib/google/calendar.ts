@@ -133,6 +133,12 @@ export async function listEvents(params: {
  * `createdBy` is the team_member who owns the Google account this event
  * came from. Stamping this on every synced row is what makes per-user
  * privacy work — without it, Ronny would see Jason's calendar.
+ *
+ * We intentionally do NOT include `shared` here. Its value is driven
+ * by a BEFORE INSERT trigger (see migration 20260423180000) that reads
+ * the creator's `team_members.events_default_shared` preference. That
+ * keeps re-syncs from clobbering manual toggles — the trigger fires on
+ * INSERT only, so existing rows retain whatever the user set.
  */
 export function toEventRow(
   gevent: GoogleEvent,

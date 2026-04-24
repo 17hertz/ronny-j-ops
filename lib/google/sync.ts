@@ -267,7 +267,10 @@ async function syncOneAccount(
     }
     // createdBy = the team_member whose Google account this row came
     // from. Drives per-user privacy on the dashboard (Ronny doesn't see
-    // Jason's events unless Jason flips shared=true).
+    // Jason's events unless Jason flips shared=true). `shared` itself
+    // is set by the BEFORE INSERT trigger on the events table using the
+    // creator's events_default_shared preference — we don't set it here
+    // so re-syncs can't clobber manual toggles.
     const row = toEventRow(gev, calendarId, "America/New_York", teamMemberId);
     if (row) activeRows.push(row);
   }
