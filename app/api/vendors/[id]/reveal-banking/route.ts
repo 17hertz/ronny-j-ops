@@ -114,15 +114,17 @@ export async function POST(
           { status: 404 }
         );
       }
-      const buf = bytea(vendor.ach_bank_details_encrypted);
+      const buf = byteaToBuffer(vendor.ach_bank_details_encrypted);
       const json = decryptToString(buf);
+      // The intake writes { routing, account } (see app/api/vendors/
+      // submit/route.ts encryptJson call) — match those keys exactly.
       const parsed = JSON.parse(json) as {
-        routing_number: string;
-        account_number: string;
+        routing: string;
+        account: string;
       };
       ach = {
-        routing_number: parsed.routing_number,
-        account_number: parsed.account_number,
+        routing_number: parsed.routing,
+        account_number: parsed.account,
         account_holder_name: vendor.ach_account_holder_name,
         bank_name: vendor.ach_bank_name,
         account_type: vendor.ach_account_type,
@@ -136,13 +138,20 @@ export async function POST(
           { status: 404 }
         );
       }
-      const buf = bytea(vendor.tax_id_encrypted);
+      const buf = byteaToBuffer(vendor.tax_id_encrypted);
       taxId = decryptToString(buf);
     }
   } catch (err: any) {
-    // Likely a wrong/missing ENCRYPTION_KEY or corrupted ciphertext.
-    // Don't leak internals — the logs will carry the specifics.
-    console.error("[reveal-banking] decrypt failed", err);
+    // Most likely causes: ENCRYPTION_KEY mismatch between intake and
+    // now, or an unrecognized bytea wire format from supabase-js.
+    // Log the actual stack server-side (check Vercel runtime logs)
+    // so we can debug without leaking internals to the client.
+    console.error("[reveal-banking] decrypt failed", {
+      vendorId: params.id,
+      fields: body.fields,
+      errMessage: err?.message,
+      errStack: err?.stack,
+    });
     return NextResponse.json(
       { ok: false, error: "Could not decrypt banking info — contact support." },
       { status: 500 }
@@ -177,12 +186,38 @@ export async function POST(
 }
 
 /**
- * Supabase-JS returns bytea columns as hex strings prefixed with "\x".
- * Convert to Buffer for the decrypt function.
+ * Supabase-JS returns bytea columns in several possible shapes
+ * depending on SDK version + request path:
+ *   - "\x<hex>"                 — Postgres's text representation
+ *   - "<hex>"                   — ditto, without the prefix
+ *   - "<base64>"                — some postgrest configs
+ *   - { type: "Buffer", data }  — if the value round-tripped JSON
+ *   - Buffer                    — rare, but handle it
+ * Try the declared format first, then fall back heuristically.
  */
-function bytea(hexWithPrefix: string): Buffer {
-  const hex = hexWithPrefix.startsWith("\\x")
-    ? hexWithPrefix.slice(2)
-    : hexWithPrefix;
-  return Buffer.from(hex, "hex");
+function byteaToBuffer(raw: unknown): Buffer {
+  if (Buffer.isBuffer(raw)) return raw;
+
+  if (raw && typeof raw === "object") {
+    const obj = raw as { type?: string; data?: unknown };
+    if (obj.type === "Buffer" && Array.isArray(obj.data)) {
+      return Buffer.from(obj.data as number[]);
+    }
+  }
+
+  if (typeof raw === "string") {
+    // Preferred: Postgres text form.
+    if (raw.startsWith("\\x")) {
+      return Buffer.from(raw.slice(2), "hex");
+    }
+    // Unprefixed hex (even length, hex chars only).
+    if (/^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) {
+      return Buffer.from(raw, "hex");
+    }
+    // Fall back to base64 — handles the case where the SDK base64-
+    // encoded the Buffer on write and returns the same on read.
+    return Buffer.from(raw, "base64");
+  }
+
+  throw new Error(`unrecognized bytea shape: ${typeof raw}`);
 }
