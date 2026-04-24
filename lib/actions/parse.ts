@@ -33,6 +33,8 @@ export type ParsedIntent =
   | { kind: "get_digest" }
   | { kind: "help" }
   | { kind: "create_event"; title: string; startsAt: string; endsAt?: string | null; location?: string | null }
+  | { kind: "ask_claude"; question: string }
+  | { kind: "ask_gpt"; question: string }
   | { kind: "unknown"; reason: string }
   | { kind: "spend_cap_reached" };
 

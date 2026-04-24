@@ -171,9 +171,18 @@ export async function POST(request: Request) {
   const senderTz = member.timezone || "America/New_York";
 
   // ---- 6. Short-circuit common keywords (no LLM burn) --------------
+  // Pre-detect the 'claude '/'gpt ' prefixes here so we don't spend a
+  // Haiku parse call classifying them — they're unambiguous. The rest
+  // of the body after the prefix is the actual question.
   const lowered = body.toLowerCase().trim();
   let intent: ParsedIntent;
-  if (/^\s*help\s*$/.test(lowered) || /^\s*\?\s*$/.test(lowered)) {
+  const claudeMatch = body.match(/^\s*claude\s+(.+)$/is);
+  const gptMatch = body.match(/^\s*gpt\s+(.+)$/is);
+  if (claudeMatch) {
+    intent = { kind: "ask_claude", question: claudeMatch[1].trim() };
+  } else if (gptMatch) {
+    intent = { kind: "ask_gpt", question: gptMatch[1].trim() };
+  } else if (/^\s*help\s*$/.test(lowered) || /^\s*\?\s*$/.test(lowered)) {
     intent = { kind: "help" };
   } else if (
     /^(what'?s (on |up )?(today|on today|happening)|digest|today)\??$/i.test(lowered)

@@ -30,6 +30,10 @@ import {
   type DigestTask,
   type CompletedTaskSummary,
 } from "@/lib/notify/digest";
+import {
+  askClaudePassthrough,
+  askGptPassthrough,
+} from "./chat-passthrough";
 import type { ParsedIntent } from "./parse";
 
 const DEFAULT_TZ = "America/New_York";
@@ -70,6 +74,10 @@ export async function dispatchIntent(
         teamMemberId,
         senderTz
       );
+    case "ask_claude":
+      return await handleAskClaude(intent.question, senderTz, teamMemberId);
+    case "ask_gpt":
+      return await handleAskGpt(intent.question);
     case "unknown":
       return {
         replyText:
@@ -93,10 +101,12 @@ const HELP_TEXT = [
   "Ronny J Ops commands:",
   "• add todo: <task>",
   "• done: <task keyword>",
+  "• add <event> <when>",
   "• what's on today",
+  "• claude <question>  — ask Claude anything",
   "• help",
   "",
-  "Tasks sync to Google Tasks automatically.",
+  "Tasks sync to Google Tasks. Events sync to Google Calendar.",
 ].join("\n");
 
 async function handleCreateTask(
@@ -304,6 +314,55 @@ async function handleCreateEvent(
       error: err?.message ?? "create event failed",
     };
   }
+}
+
+/**
+ * Free-form Claude passthrough. Called when the inbound starts with
+ * "claude ". Returns whatever Claude replied, truncated for SMS fit.
+ */
+async function handleAskClaude(
+  question: string,
+  senderTz: string,
+  teamMemberId: string
+): Promise<DispatchOutcome> {
+  // Fetch the sender's name for a nicer system prompt. Cheap round-trip
+  // and makes Claude's replies feel more personal.
+  let senderName: string | undefined;
+  try {
+    const admin = createAdminClient();
+    const { data } = (await (admin as any)
+      .from("team_members")
+      .select("full_name")
+      .eq("id", teamMemberId)
+      .maybeSingle()) as { data: { full_name: string } | null };
+    senderName = data?.full_name;
+  } catch {
+    // Not fatal — Claude just gets a less-personalized prompt.
+  }
+
+  const res = await askClaudePassthrough(question, {
+    senderTz,
+    senderName,
+  });
+  return {
+    replyText: res.replyText,
+    actionStatus: res.refused ? "ignored" : res.error ? "error" : "done",
+    intent: "ask_claude",
+    error: res.error,
+  };
+}
+
+/**
+ * GPT stub handler. Returns a canned "not wired up" until we add
+ * OpenAI integration — see chat-passthrough.askGptPassthrough.
+ */
+async function handleAskGpt(question: string): Promise<DispatchOutcome> {
+  const res = await askGptPassthrough(question);
+  return {
+    replyText: res.replyText,
+    actionStatus: "ignored",
+    intent: "ask_gpt",
+  };
 }
 
 function truncate(s: string, max: number): string {

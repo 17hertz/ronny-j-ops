@@ -203,3 +203,24 @@ app is further along / revenue is coming in. Oldest items at the top.
     Worth doing before public vendor-facing SMS (vendor notifications,
     reminder dispatches) so a silent undelivered never goes unnoticed.
 
+
+[ ] Wire GPT passthrough for SMS/WhatsApp ("gpt <question>")
+    Added: 2026-04-23
+    Status: stub shipped — lib/actions/chat-passthrough.ts has
+    askGptPassthrough() that returns a canned "not wired up" message.
+    When we're ready:
+      1. Add OPENAI_API_KEY to .env.local + Vercel.
+      2. Install `openai` SDK or use fetch directly to POST to
+         https://api.openai.com/v1/chat/completions.
+      3. Replace askGptPassthrough stub with a real call (gpt-4o or
+         gpt-4o-mini for cost). Mirror the spend-gate pattern used by
+         askClaudePassthrough — log to api_spend_log with purpose='other'
+         and model='gpt-4o-mini' or similar.
+      4. Update the spend-gate PRICING table in lib/agent/spend-gate.ts
+         to include OpenAI pricing so cost_cents stays accurate.
+      5. Optional: allow the caller to pick (different flavor for
+         different use cases), or just use it as a fallback when Claude
+         is overwhelmed.
+    Decision: only worth the code churn if Claude replies disappoint
+    Ronny for some specific query type. For now, "claude" covers it.
+
