@@ -14,6 +14,7 @@ import { ReconnectBanner } from "./reconnect-banner";
 import { CompletedTodaySection } from "./completed-today-section";
 import { listCompletedTodayForMember } from "@/lib/tasks/service";
 import { SyncErrorsPanel } from "./sync-errors-panel";
+import { EventShareToggle } from "./event-share-toggle";
 import { TaskCheckbox } from "./task-checkbox";
 import {
   labelFor,
@@ -155,11 +156,16 @@ export default async function DashboardPage({
       break;
   }
 
+  // Privacy filter: show only events the viewer created OR events
+  // explicitly shared with the team. `.or()` in Supabase-js composes as
+  // an OR-group. `shared` boolean + `created_by` column were added in
+  // migration 20260423170000_events_sharing.sql.
   const { data: upcomingEvents } = (await supabase
     .from("events")
-    .select("id, title, location, starts_at, ends_at, timezone")
+    .select("id, title, location, starts_at, ends_at, timezone, created_by, shared")
     .gte("ends_at", now.toISOString())
     .lte("starts_at", rangeEnd.toISOString())
+    .or(`created_by.eq.${teamMember.id},shared.eq.true`)
     .order("starts_at", { ascending: true })) as {
     data:
       | Array<{
@@ -169,6 +175,8 @@ export default async function DashboardPage({
           starts_at: string;
           ends_at: string;
           timezone: string;
+          created_by: string | null;
+          shared: boolean;
         }>
       | null;
   };
@@ -522,13 +530,24 @@ export default async function DashboardPage({
                           <span className="font-medium text-neutral-100">
                             {ev.title}
                           </span>
-                          <span className="font-mono text-xs text-neutral-500">
-                            {formatEventWindow(
-                              ev.starts_at,
-                              ev.ends_at,
-                              ev.timezone
+                          <div className="flex shrink-0 items-center gap-3">
+                            {/* Only the event's creator can toggle sharing.
+                                Non-creators see neither the toggle nor a
+                                status pill — kept minimal by design. */}
+                            {ev.created_by === teamMember.id && (
+                              <EventShareToggle
+                                eventId={ev.id}
+                                initialShared={ev.shared}
+                              />
                             )}
-                          </span>
+                            <span className="font-mono text-xs text-neutral-500">
+                              {formatEventWindow(
+                                ev.starts_at,
+                                ev.ends_at,
+                                ev.timezone
+                              )}
+                            </span>
+                          </div>
                         </div>
                         {ev.location && (
                           <p className="mt-1 text-xs text-neutral-500">

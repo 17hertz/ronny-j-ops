@@ -129,11 +129,16 @@ export async function listEvents(params: {
 /**
  * Map a Google event to the columns our `events` table expects.
  * Returns null if the event is cancelled (caller should delete in that case).
+ *
+ * `createdBy` is the team_member who owns the Google account this event
+ * came from. Stamping this on every synced row is what makes per-user
+ * privacy work — without it, Ronny would see Jason's calendar.
  */
 export function toEventRow(
   gevent: GoogleEvent,
   googleCalendarId: string,
-  defaultTimezone: string
+  defaultTimezone: string,
+  createdBy: string
 ): null | {
   google_calendar_id: string;
   google_event_id: string;
@@ -145,6 +150,7 @@ export function toEventRow(
   timezone: string;
   etag: string | null;
   source: "google";
+  created_by: string;
 } {
   if (gevent.status === "cancelled") return null;
 
@@ -177,6 +183,7 @@ export function toEventRow(
     timezone: tz,
     etag: gevent.etag ?? null,
     source: "google",
+    created_by: createdBy,
   };
 }
 

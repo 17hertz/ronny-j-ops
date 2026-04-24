@@ -265,7 +265,10 @@ async function syncOneAccount(
       cancelledEventIds.push(gev.id);
       continue;
     }
-    const row = toEventRow(gev, calendarId, "America/New_York");
+    // createdBy = the team_member whose Google account this row came
+    // from. Drives per-user privacy on the dashboard (Ronny doesn't see
+    // Jason's events unless Jason flips shared=true).
+    const row = toEventRow(gev, calendarId, "America/New_York", teamMemberId);
     if (row) activeRows.push(row);
   }
 

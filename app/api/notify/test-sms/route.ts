@@ -104,11 +104,13 @@ export async function POST(request: Request) {
   const { startUtc, endUtc } = todayBoundsUtc(TZ);
 
   // Today's events — any event whose start falls in today's zone.
+  // Privacy filter: viewer's own events + team-shared events only.
   const { data: eventRows } = (await (admin as any)
     .from("events")
     .select("title, starts_at, location")
     .gte("starts_at", startUtc.toISOString())
     .lt("starts_at", endUtc.toISOString())
+    .or(`created_by.eq.${member.id},shared.eq.true`)
     .order("starts_at", { ascending: true })) as {
     data: EventRow[] | null;
   };

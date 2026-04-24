@@ -192,11 +192,13 @@ async function handleDigest(teamMemberId: string): Promise<DispatchOutcome> {
     const admin = createAdminClient();
     const { startUtc, endUtc } = todayBoundsUtc(TZ);
 
+    // Privacy filter: viewer's own events + team-shared events only.
     const { data: eventRows } = (await (admin as any)
       .from("events")
       .select("title, starts_at, location")
       .gte("starts_at", startUtc.toISOString())
       .lt("starts_at", endUtc.toISOString())
+      .or(`created_by.eq.${teamMemberId},shared.eq.true`)
       .order("starts_at", { ascending: true })) as {
       data: Array<{ title: string; starts_at: string; location: string | null }> | null;
     };
