@@ -58,7 +58,12 @@ export async function dispatchIntent(
 ): Promise<DispatchOutcome> {
   switch (intent.kind) {
     case "create_task":
-      return await handleCreateTask(intent.title, intent.dueAt ?? null, teamMemberId);
+      return await handleCreateTask(
+        intent.title,
+        intent.dueAt ?? null,
+        teamMemberId,
+        senderTz
+      );
     case "complete_task":
       return await handleCompleteTask(intent.titleMatch, teamMemberId);
     case "get_digest":
@@ -112,13 +117,20 @@ const HELP_TEXT = [
 async function handleCreateTask(
   title: string,
   dueAt: string | null,
-  teamMemberId: string
+  teamMemberId: string,
+  senderTz: string
 ): Promise<DispatchOutcome> {
   try {
+    // Convert naive parser output ("tomorrow 5pm" → ISO) into proper
+    // UTC using the sender's zone. Same pattern as handleCreateEvent;
+    // otherwise tasks due "tomorrow 5pm PT" would store as 5pm UTC and
+    // show up in Google Tasks on the wrong day when crossing midnight.
+    const dueAtUtc = dueAt ? naiveLocalToUtcIso(dueAt, senderTz) : null;
+
     const task = await createTask({
       teamMemberId,
       title,
-      dueAt,
+      dueAt: dueAtUtc,
       source: "sms",
     });
     const dueBit = dueAt
@@ -277,12 +289,19 @@ async function handleCreateEvent(
   senderTz: string
 ): Promise<DispatchOutcome> {
   try {
+    // The parser emits a naive ISO like "2026-04-25T14:00:00" meaning
+    // "2pm in the sender's zone." Convert to real UTC before storing,
+    // otherwise Postgres interprets it as UTC and the event ends up at
+    // the wrong wall-clock time.
+    const startsAtUtc = naiveLocalToUtcIso(startsAt, senderTz);
+    const endsAtUtc = endsAt ? naiveLocalToUtcIso(endsAt, senderTz) : null;
+
     const event = await createEvent({
       teamMemberId,
       title,
       location,
-      startsAt,
-      endsAt,
+      startsAt: startsAtUtc,
+      endsAt: endsAtUtc,
       timezone: senderTz,
       source: "sms",
     });
@@ -367,4 +386,61 @@ async function handleAskGpt(question: string): Promise<DispatchOutcome> {
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
+
+/**
+ * Convert a naive ISO timestamp (no Z, no offset) produced by the
+ * Haiku parser into a proper UTC ISO, interpreting the wall-clock time
+ * in the sender's timezone.
+ *
+ * Why this exists: the parser emits strings like "2026-04-25T14:00:00"
+ * meaning "2pm in the sender's zone." If we pass that through raw to
+ * Postgres (timestamptz column, session = UTC), it stores as 14:00 UTC,
+ * which is 7am PT → Ronny's Saturday 2pm show ends up on his phone at
+ * 7am. Converting here first keeps starts_at honest: the column really
+ * is UTC, and downstream code doesn't need to know the origin zone.
+ *
+ * If the input already has a Z or numeric offset we trust it — Claude
+ * sometimes produces offset-qualified ISOs even when we ask it not to,
+ * which is also correct UTC.
+ */
+function naiveLocalToUtcIso(input: string, tz: string): string {
+  if (/Z$|[+-]\d{2}:?\d{2}$/.test(input)) return input;
+
+  // Parse YYYY-MM-DDTHH:MM(:SS)?
+  const m = input.match(
+    /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/
+  );
+  if (!m) {
+    // Fall back to Date parsing — will treat as local to server zone,
+    // which on Vercel is UTC. Not ideal but better than throwing.
+    return new Date(input).toISOString();
+  }
+  const [, yy, mm, dd, hh, mi, ss = "0"] = m;
+  const y = Number(yy),
+    mo = Number(mm) - 1,
+    d = Number(dd),
+    h = Number(hh),
+    min = Number(mi),
+    s = Number(ss);
+
+  // Anchor the same wall-clock in UTC, then measure how that UTC instant
+  // looks in the target tz. The difference is the tz's UTC offset at
+  // that moment — handles DST automatically via Intl.
+  const asUtc = new Date(Date.UTC(y, mo, d, h, min, s));
+  const hourInTz = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "2-digit",
+      hour12: false,
+    }).format(asUtc)
+  );
+  // If UTC wall = 14 and tz wall = 7, tz is UTC-7. We want a UTC
+  // timestamp that renders as 14 in the tz — so shift by +7 hours.
+  let offsetHours = h - hourInTz;
+  if (offsetHours < -12) offsetHours += 24;
+  if (offsetHours > 12) offsetHours -= 24;
+
+  const corrected = new Date(asUtc.getTime() + offsetHours * 60 * 60 * 1000);
+  return corrected.toISOString();
 }
