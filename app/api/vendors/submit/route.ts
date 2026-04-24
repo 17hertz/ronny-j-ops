@@ -129,14 +129,25 @@ export async function POST(req: Request) {
 
   // Encrypt sensitive values in the Node process — never pass cleartext
   // through to the DB in the INSERT statement.
-  const taxIdEncrypted = encryptString(d.tax_id);
-  const achBundleEncrypted = encryptJson({
-    routing: d.ach_routing_number,
-    account: d.ach_account_number,
-    type: d.ach_account_type,
-    holder: d.ach_account_holder_name,
-    bank: d.ach_bank_name,
-  });
+  //
+  // IMPORTANT: encrypt* returns a Node Buffer. If we pass that raw to
+  // supabase-js insert(), the SDK serializes Buffer via Buffer.toJSON()
+  // which produces `{"type":"Buffer","data":[...]}`. Postgrest then
+  // stores the UTF-8 bytes of that STRING in the bytea column — the
+  // actual encrypted bytes are discarded. This is a subtle foot-gun;
+  // legacy rows written before 2026-04-24 hit it. Fix: encode to the
+  // Postgres text form '\x<hex>', which postgrest accepts directly as
+  // bytea input.
+  const taxIdEncrypted = "\\x" + encryptString(d.tax_id).toString("hex");
+  const achBundleEncrypted =
+    "\\x" +
+    encryptJson({
+      routing: d.ach_routing_number,
+      account: d.ach_account_number,
+      type: d.ach_account_type,
+      holder: d.ach_account_holder_name,
+      bank: d.ach_bank_name,
+    }).toString("hex");
 
   // One-time portal token so the vendor can upload their W9 / edit the
   // record before Jason or Ronny approves. 32 bytes of URL-safe entropy.

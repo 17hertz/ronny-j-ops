@@ -194,8 +194,21 @@ export async function POST(
  *   - { type: "Buffer", data }  — if the value round-tripped JSON
  *   - Buffer                    — rare, but handle it
  * Try the declared format first, then fall back heuristically.
+ *
+ * LEGACY ROWS (2026-04-24 and earlier): vendor intake wrote a raw
+ * Buffer to a bytea column via supabase-js, which silently serialized
+ * it as Buffer.toJSON() — i.e. the stored bytes are the UTF-8 bytes of
+ * a string like '{"type":"Buffer","data":[1,171,...]}'. The real
+ * encrypted ciphertext is inside that `data` array. We detect this
+ * (first byte is '{' = 0x7B) and rehydrate before returning.
  */
 function byteaToBuffer(raw: unknown): Buffer {
+  const decoded = decodeBytea(raw);
+  const rehydrated = rehydrateLegacyBufferJson(decoded);
+  return rehydrated ?? decoded;
+}
+
+function decodeBytea(raw: unknown): Buffer {
   if (Buffer.isBuffer(raw)) return raw;
 
   if (raw && typeof raw === "object") {
@@ -206,18 +219,43 @@ function byteaToBuffer(raw: unknown): Buffer {
   }
 
   if (typeof raw === "string") {
-    // Preferred: Postgres text form.
     if (raw.startsWith("\\x")) {
       return Buffer.from(raw.slice(2), "hex");
     }
-    // Unprefixed hex (even length, hex chars only).
     if (/^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) {
       return Buffer.from(raw, "hex");
     }
-    // Fall back to base64 — handles the case where the SDK base64-
-    // encoded the Buffer on write and returns the same on read.
     return Buffer.from(raw, "base64");
   }
 
   throw new Error(`unrecognized bytea shape: ${typeof raw}`);
+}
+
+/**
+ * If the decoded bytes are actually a JSON-serialized Buffer (legacy
+ * write-path bug), extract the inner data array and return the real
+ * Buffer. Returns null if the bytes are NOT the legacy format, so
+ * callers can fall through to the raw bytes.
+ */
+function rehydrateLegacyBufferJson(buf: Buffer): Buffer | null {
+  if (buf.length < 20) return null;
+  if (buf[0] !== 0x7b) return null; // '{'
+  // Only attempt JSON parse if the last byte is '}' — cheap guard
+  // against accidentally trying to parse real ciphertext that happens
+  // to start with 0x7b.
+  if (buf[buf.length - 1] !== 0x7d) return null; // '}'
+  try {
+    const parsed = JSON.parse(buf.toString("utf8"));
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      parsed.type === "Buffer" &&
+      Array.isArray(parsed.data)
+    ) {
+      return Buffer.from(parsed.data as number[]);
+    }
+  } catch {
+    // Not JSON — fall through.
+  }
+  return null;
 }

@@ -353,3 +353,25 @@ app is further along / revenue is coming in. Oldest items at the top.
     Total build estimate: ~3-4 hours of code + ~30 min setup on
     Jason/Ronny's side. Don't attempt when fried.
 
+
+[ ] Role-gate the banking-info reveal endpoint
+    Added: 2026-04-24
+    Context: /api/vendors/[id]/reveal-banking currently allows ANY
+    logged-in team_member to decrypt a vendor's ACH / tax ID. The
+    audit trail (banking_reveals table) is the deterrent, not access
+    control. Fine for two-user ops where Jason + Ronny both handle
+    payments; NOT fine once we add staff / interns / bookkeepers.
+    Scope when triggered:
+      1. Add a role check in the route handler — require
+         team_members.role === 'admin' (or a new 'finance' role).
+      2. UI: hide the Reveal button for non-authorized roles so it's
+         not just a backend 403 on click.
+      3. Consider adding step-up auth (recent login within N minutes,
+         or a magic-link re-challenge) before revealing — belt and
+         suspenders for high-trust operations.
+      4. Alert pattern: a Supabase row-level trigger that emits a
+         notification when banking_reveals gets > N rows/hour for the
+         same team_member (anomaly detection).
+    Don't bother until team grows past Jason + Ronny. For two trusted
+    co-founders the audit trail alone is the right posture.
+
