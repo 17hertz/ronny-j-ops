@@ -10,6 +10,7 @@ import {
 } from "./up-next-range-picker";
 import { UpNextPager } from "./up-next-pager";
 import { NewTaskForm } from "./new-task-form";
+import { NewEventForm } from "./new-event-form";
 import { ReconnectBanner } from "./reconnect-banner";
 import { CompletedTodaySection } from "./completed-today-section";
 import { listCompletedTodayForMember } from "@/lib/tasks/service";
@@ -527,6 +528,11 @@ export default async function DashboardPage({
           }
           cta={<UpNextRangePicker current={upNextRange} />}
         >
+          {/* Inline add-event form. Collapsed by default; click "Add
+              event" to reveal. Uses the viewer's timezone so wall-clock
+              inputs land correctly regardless of server zone. */}
+          <NewEventForm viewerTz={viewerTz} />
+
           {eventDayKeys.length > 0 ? (
             <div className="space-y-4">
               {eventDayKeys.map((dayKey) => (
