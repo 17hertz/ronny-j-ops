@@ -301,6 +301,213 @@ const draftVendorMessage: ToolDef = {
   },
 };
 
+// ---------- list_event_crew -------------------------------------------
+
+const listEventCrew: ToolDef = {
+  schema: {
+    name: "list_event_crew",
+    description:
+      "List vendor assignments (crew) for events. Use when the user asks " +
+      "questions like 'who's my security tonight?', 'what time's my set?', " +
+      "'who's working this weekend?', 'what time is the driver showing up?'. " +
+      "Returns each assignment with role, vendor name, service window, and " +
+      "on-site contact. Filter by event_id (exact match), date (YYYY-MM-DD " +
+      "in America/New_York, finds events that day), or role.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: {
+          type: "string",
+          description: "UUID of a specific event. If set, ignores date filter.",
+        },
+        date: {
+          type: "string",
+          description:
+            "YYYY-MM-DD (America/New_York) to filter by events happening that day.",
+        },
+        role: {
+          type: "string",
+          description:
+            "Optional role filter (security, artist, driver, photography, etc.)",
+        },
+      },
+    },
+  },
+  run: async (input: { event_id?: string; date?: string; role?: string }) => {
+    const admin = createAdminClient();
+
+    let q = (admin as any)
+      .from("event_vendors")
+      .select(
+        `
+        id, role, service_window_start, service_window_end,
+        contact_on_site, notes,
+        event:events ( id, title, starts_at, ends_at, timezone, location ),
+        vendor:vendors ( id, legal_name, dba, contact_email, contact_phone, service_category )
+        `
+      )
+      .order("service_window_start", { ascending: true, nullsFirst: false });
+
+    if (input.event_id) q = q.eq("event_id", input.event_id);
+    if (input.role) q = q.eq("role", input.role);
+
+    // Date filter resolves to "events whose starts_at falls on this date
+    // in America/New_York." Two-step: compute UTC bounds for the date,
+    // then filter the JOIN via `starts_at` ranges. Postgrest doesn't
+    // easily filter on a joined column, so we do a preliminary event
+    // lookup and then constrain event_id to the resulting list.
+    if (input.date && !input.event_id) {
+      const anchor = new Date(`${input.date}T12:00:00Z`);
+      const hourInZone = Number(
+        new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/New_York",
+          hour: "2-digit",
+          hour12: false,
+        }).format(anchor)
+      );
+      const offsetHours = 12 - hourInZone;
+      const startUtc = new Date(`${input.date}T00:00:00Z`);
+      startUtc.setUTCHours(startUtc.getUTCHours() + offsetHours);
+      const endUtc = new Date(startUtc);
+      endUtc.setUTCDate(endUtc.getUTCDate() + 1);
+
+      const { data: dateEvents } = (await (admin as any)
+        .from("events")
+        .select("id")
+        .gte("starts_at", startUtc.toISOString())
+        .lt("starts_at", endUtc.toISOString())) as {
+        data: Array<{ id: string }> | null;
+      };
+      const ids = (dateEvents ?? []).map((e) => e.id);
+      if (ids.length === 0) return { count: 0, assignments: [] };
+      q = q.in("event_id", ids);
+    }
+
+    const { data, error } = await q.limit(50);
+    if (error) return { error: error.message };
+    return { count: (data ?? []).length, assignments: data ?? [] };
+  },
+};
+
+// ---------- assign_vendor_to_event ------------------------------------
+
+const assignVendorToEvent: ToolDef = {
+  schema: {
+    name: "assign_vendor_to_event",
+    description:
+      "Attach a vendor to an event in a specific role with optional service " +
+      "window and on-site contact. Use when the user says things like " +
+      "'assign Crescent Security to tonight's show, call time 8pm' or " +
+      "'put Monk behind the lens for Saturday'. Requires both event_id and " +
+      "vendor_id — you may need to call list_events and search_vendors first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: { type: "string", description: "Target event UUID" },
+        vendor_id: { type: "string", description: "Vendor UUID to assign" },
+        role: {
+          type: "string",
+          enum: [
+            "security", "photography", "videography", "catering", "lighting",
+            "sound", "driver", "transportation", "promoter", "venue",
+            "artist", "opener", "hair_makeup", "stylist", "stage", "runner",
+            "hospitality", "streamer", "performer", "model", "other",
+          ],
+        },
+        service_window_start: {
+          type: "string",
+          description: "Optional ISO 8601 start (call time, set start, etc.)",
+        },
+        service_window_end: {
+          type: "string",
+          description: "Optional ISO 8601 end. Defaults to 1h after start if omitted.",
+        },
+        contact_on_site: {
+          type: "string",
+          description: "Free-text 'name + phone' of the specific person working (e.g. 'Mike 555-1234')",
+        },
+        notes: { type: "string", description: "Short free-text notes" },
+      },
+      required: ["event_id", "vendor_id", "role"],
+    },
+  },
+  run: async (input: {
+    event_id: string;
+    vendor_id: string;
+    role: string;
+    service_window_start?: string;
+    service_window_end?: string;
+    contact_on_site?: string;
+    notes?: string;
+  }) => {
+    const admin = createAdminClient();
+    const end =
+      input.service_window_end ??
+      (input.service_window_start
+        ? new Date(
+            new Date(input.service_window_start).getTime() + 60 * 60 * 1000
+          ).toISOString()
+        : undefined);
+
+    const { data, error } = (await (admin as any)
+      .from("event_vendors")
+      .insert({
+        event_id: input.event_id,
+        vendor_id: input.vendor_id,
+        role: input.role,
+        service_window_start: input.service_window_start ?? null,
+        service_window_end: end ?? null,
+        contact_on_site: input.contact_on_site ?? null,
+        notes: input.notes ?? null,
+      })
+      .select("id, event_id, vendor_id, role")
+      .single()) as {
+      data: {
+        id: string;
+        event_id: string;
+        vendor_id: string;
+        role: string;
+      } | null;
+      error: { message: string } | null;
+    };
+
+    if (error) return { error: error.message };
+    return { ok: true, assignment: data };
+  },
+};
+
+// ---------- unassign_vendor_from_event --------------------------------
+
+const unassignVendorFromEvent: ToolDef = {
+  schema: {
+    name: "unassign_vendor_from_event",
+    description:
+      "Remove a vendor assignment from an event. Use when the user says " +
+      "'drop X from tonight' or 'unbook Y from Saturday'. Pass the " +
+      "assignment's id (not the vendor_id). Get the id from list_event_crew.",
+    input_schema: {
+      type: "object",
+      properties: {
+        assignment_id: {
+          type: "string",
+          description:
+            "UUID of the event_vendors row to delete. Returned by list_event_crew as `id`.",
+        },
+      },
+      required: ["assignment_id"],
+    },
+  },
+  run: async (input: { assignment_id: string }) => {
+    const admin = createAdminClient();
+    const { error } = await (admin as any)
+      .from("event_vendors")
+      .delete()
+      .eq("id", input.assignment_id);
+    if (error) return { error: error.message };
+    return { ok: true, removed: input.assignment_id };
+  },
+};
+
 // ---------- Registry ---------------------------------------------------
 
 export const tools: Record<string, ToolDef> = {
@@ -309,6 +516,9 @@ export const tools: Record<string, ToolDef> = {
   list_invoices: listInvoices,
   get_invoice: getInvoice,
   list_events: listEvents,
+  list_event_crew: listEventCrew,
+  assign_vendor_to_event: assignVendorToEvent,
+  unassign_vendor_from_event: unassignVendorFromEvent,
   list_pending_reminders: listPendingReminders,
   draft_vendor_message: draftVendorMessage,
 };

@@ -224,3 +224,44 @@ app is further along / revenue is coming in. Oldest items at the top.
     Decision: only worth the code churn if Claude replies disappoint
     Ronny for some specific query type. For now, "claude" covers it.
 
+
+[ ] Default crew templates (auto-populate vendors on event create)
+    Added: 2026-04-24
+    Context: Ronny's driver is almost always the same person, same with
+    his regular photographer / security company. Manually attaching
+    them to every new event gets tedious.
+    Scope:
+      - Per team_member 'default_crew' config, stored as JSON or a
+        separate defaults table: [{role, vendor_id, service_window_offset}].
+      - When an event is created (from any source — dashboard, SMS,
+        Google sync) and the event has no existing crew yet, apply the
+        defaults with service windows computed as offset from event
+        starts_at.
+      - Dashboard UI to manage per-user defaults. "Set as my default
+        driver" button on a vendor row.
+    Not urgent — wait until Jason has actually populated 5-10 real
+    events so we have signal on which roles repeat.
+
+
+[ ] Propagate event_vendors crew to Google Calendar attendees
+    Added: 2026-04-24
+    Context: Today a vendor assignment is purely local (in public.
+    event_vendors). Google Calendar knows nothing about it. Optional
+    future: when we assign a vendor with an email, add them as a
+    Google Calendar event attendee so they get a calendar invite.
+    Tradeoffs:
+      - Pros: vendors get auto-invites, event shows up on their calendar.
+      - Cons: spam potential, confirmation flow gets messy, removing
+        a vendor means removing them from the GCal event too (and they
+        may have set 'yes' to the invite).
+    Scope if/when wanted:
+      1. On assignVendorToEvent, if vendor has contact_email, PATCH the
+         Google event to add them to attendees via patchGoogleEvent.
+      2. On unassign, PATCH to remove from attendees.
+      3. Opt-in per team_member preference — some people want the
+         auto-invite behavior, others find it noisy.
+      4. Handle GCal attendee confirmation status → mirror into
+         event_vendors.confirmation_status if useful.
+    Don't ship without explicit user request — the default behavior
+    (local-only) is safe and less surprising.
+

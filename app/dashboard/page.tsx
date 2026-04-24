@@ -541,16 +541,23 @@ export default async function DashboardPage({
                     {eventsByDay.get(dayKey)!.map((ev) => (
                       <li
                         key={ev.id}
-                        className="rounded-md border border-neutral-800 px-3 py-2 text-sm"
+                        className="rounded-md border border-neutral-800 px-3 py-2 text-sm transition hover:border-neutral-700"
                       >
                         <div className="flex items-baseline justify-between gap-3">
-                          <span className="font-medium text-neutral-100">
-                            {ev.title}
-                          </span>
+                          {/* Title + time as the tappable link target —
+                              opens the event detail page. Share toggle
+                              sits as a sibling so its click isn't
+                              intercepted by the link. */}
+                          <Link
+                            href={`/dashboard/events/${ev.id}`}
+                            className="group min-w-0 flex-1"
+                            aria-label={`Open ${ev.title} detail`}
+                          >
+                            <span className="font-medium text-neutral-100 group-hover:text-brand">
+                              {ev.title}
+                            </span>
+                          </Link>
                           <div className="flex shrink-0 items-center gap-3">
-                            {/* Only the event's creator can toggle sharing.
-                                Non-creators see neither the toggle nor a
-                                status pill — kept minimal by design. */}
                             {ev.created_by === teamMember.id && (
                               <EventShareToggle
                                 eventId={ev.id}
