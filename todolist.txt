@@ -375,3 +375,107 @@ app is further along / revenue is coming in. Oldest items at the top.
     Don't bother until team grows past Jason + Ronny. For two trusted
     co-founders the audit trail alone is the right posture.
 
+
+[ ] Screenshot → OCR → Claude classify → auto-route
+    Added: 2026-04-24
+    Idea: Ronny snaps a pic of an email, a contract, a receipt, a flyer,
+    a handwritten note. Sends to the app (via SMS MMS, WhatsApp, or a
+    dashboard drop-zone). Claude looks at the image, decides what it is,
+    files it correctly, and follows up.
+
+    Classification targets + routing:
+      - TASK            → createTask
+      - EVENT (flyer,
+        venue booking)  → createEvent
+      - BILL: SERVICE   → vendor doesn't exist yet → text/email them the
+                          intake signup link (reuses existing vendor invite
+                          flow) so they submit their W9 + banking info.
+                          Ties the invoice to the new vendor once they claim.
+                          Requires W9 because SERVICES to a business are
+                          1099-reportable.
+      - BILL: PRODUCT   → goods purchased (gear, merch supplies, etc.).
+        (has sales tax)   Sales tax on the receipt = it's a PRODUCT purchase
+                          from a registered retailer, which means NO W9
+                          needed (sales tax already satisfies the state's
+                          revenue reporting). Store as a row in a new
+                          `direct_expenses` table (date, merchant name,
+                          amount, category, receipt_storage_path). Roll
+                          into the existing expense report PDFs.
+      - PAYMENT LINK    → Stripe / Venmo / PayPal link on a bill. Parse
+                          URL, store as pending_payment row with link,
+                          create a task to pay. On payment, either manual
+                          confirmation or Stripe webhook (post-v1).
+      - CONTACT INFO    → store in contacts / create a vendor stub.
+      - OTHER           → reply "not sure what this is, do you want me
+                          to just save it as a task?"
+
+    Schema additions (new tables):
+      - direct_expenses (id, merchant, amount_cents, sales_tax_cents,
+        category, expense_date, receipt_storage_path, created_by,
+        team_member_id, created_at). Receipts bucket in Supabase Storage.
+      - bill_captures (id, source: sms|whatsapp|dashboard, image_path,
+        ocr_text, claude_classification jsonb, routed_to_type, routed_to_id,
+        team_member_id, created_at). Full audit trail from photo →
+        eventual action so you can always trace back what happened.
+
+    Implementation plan:
+      1. Dashboard drop-zone page (/dashboard/capture) — drag + drop or
+         file input; uploads to Supabase Storage with a signed URL.
+      2. POST /api/captures — accepts {image_path, source}, queues an
+         Inngest event 'capture/classify'.
+      3. Inngest function captureClassifyRunner:
+           a. Load image from storage to a blob
+           b. Send to Claude Sonnet vision API with a system prompt
+              describing the classification taxonomy + asking for a
+              structured JSON output (intent + fields)
+           c. Based on intent, call the right service (createTask,
+              createEvent, createDirectExpense, sendVendorIntakeLink,
+              etc.)
+           d. Write to bill_captures for audit
+           e. Send confirmation SMS/WhatsApp back: "Got the receipt
+              from <merchant> for $<amount>, logged as an expense."
+      4. SMS/WhatsApp inbound: Twilio carries media attachments via
+         MediaUrl0, MediaUrl1 params in the webhook. When present,
+         download the image to Storage, then call the same capture
+         pipeline. Reply with the confirmation when done.
+      5. Update Claude passthrough system prompt so it knows the
+         'capture' flow exists (so it can answer "did you file that
+         screenshot I sent?" with list_captures or similar).
+
+    Claude vision cost:
+      - Each image is ~1500-2000 tokens of image data (small) + a few
+        hundred tokens of prompt + output.
+      - At Sonnet pricing: ~$0.01-0.02 per classification.
+      - 20 receipts/day = $6-12/mo. Fits inside $20 cap comfortably.
+
+    Sales tax / W9 decision logic (for "BILL" classification):
+      - If receipt has sales tax amount → it's a PRODUCT sale from a
+        registered retailer → direct_expense, no W9 needed.
+      - If no sales tax AND service-like language ("consulting",
+        "performance", "labor", "services rendered") → BILL: SERVICE,
+        W9 needed, route to vendor intake.
+      - Ambiguous → ask user in a confirmation SMS: "Looks like a bill
+        from <merchant> for $<amount>. Is this a service (needs W9) or
+        a product (no W9)?"
+
+    Privacy / safety:
+      - Images stored in a private Storage bucket.
+      - Claude sees the image once per classification — not persisted
+        in Anthropic's systems beyond the API call (per their data use
+        policy).
+      - PII in receipts (card last 4, address) stays in our DB — same
+        treatment as existing vendor data.
+
+    Total build estimate: ~6-8 hours. NOT a one-evening build; pair
+    with coffee.
+
+    Prerequisite Jason decisions:
+      - Confirm the W9-vs-no-W9 heuristic matches his mental model.
+        Verify with a CPA if scaling — this is our interpretation, not
+        tax advice.
+      - Pick the MMS strategy: Twilio Programmable Messaging supports
+        MMS on US long codes + TF numbers (once TFV clears). WhatsApp
+        supports media natively.
+      - Decide whether to support email attachments too (via the
+        deferred Resend inbound entry above — unified flow).
+

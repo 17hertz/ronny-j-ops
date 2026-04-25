@@ -138,9 +138,20 @@ export default async function EventDetailPage({
         >
           ← Dashboard
         </Link>
-        <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-600">
-          {event.shared ? "shared" : "private"}
-        </span>
+        <div className="flex items-center gap-3">
+          {/* Day-of-show call sheet. Plain anchor with `download`
+              triggers a file save without a blob-fetch dance — the
+              API route streams a Content-Disposition: attachment. */}
+          <a
+            href={`/api/events/${event.id}/call-sheet`}
+            className="rounded-md border border-neutral-800 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-neutral-300 transition hover:border-brand hover:text-brand"
+          >
+            Call sheet PDF
+          </a>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-600">
+            {event.shared ? "shared" : "private"}
+          </span>
+        </div>
       </header>
 
       <section className="mt-8">
