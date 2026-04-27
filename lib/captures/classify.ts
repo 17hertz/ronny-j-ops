@@ -344,10 +344,12 @@ async function buildUserContent(opts: {
       // routes that never see a docx.
       const mammoth = await import("mammoth");
       const { value: text } = await mammoth.extractRawText({
-        // Cast: newer @types/node makes Buffer generic
-        // (Buffer<ArrayBufferLike>); mammoth's types still expect the
-        // older non-generic Buffer. Runtime shape is identical.
-        buffer: opts.fileBuffer as unknown as Buffer,
+        // `as any` bypasses TS — newer @types/node makes Buffer generic
+        // (Buffer<ArrayBufferLike>) but mammoth's types still expect
+        // the legacy non-generic Buffer. Casting `as Buffer` doesn't
+        // help because TS resolves Buffer to its current (generic)
+        // form. Runtime value is identical; we just need to silence TS.
+        buffer: opts.fileBuffer as any,
       });
       const truncated = truncateText(text, 100_000);
       return {
@@ -380,9 +382,10 @@ async function buildUserContent(opts: {
     try {
       const ExcelJS = (await import("exceljs")).default;
       const wb = new ExcelJS.Workbook();
-      // Cast: ExcelJS types expect non-generic Buffer; @types/node now
-      // returns Buffer<ArrayBufferLike>. Runtime shape is identical.
-      await wb.xlsx.load(opts.fileBuffer as unknown as Buffer);
+      // `as any` bypasses TS — ExcelJS types expect legacy Buffer but
+      // newer @types/node makes Buffer generic. Casting to Buffer
+      // doesn't help because Buffer itself resolves to the generic form.
+      await wb.xlsx.load(opts.fileBuffer as any);
       const lines: string[] = [];
       wb.eachSheet((sheet) => {
         lines.push(`### Sheet: ${sheet.name}`);
