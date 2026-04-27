@@ -162,13 +162,24 @@ current year. Be conservative with confidence: 0.95+ only when fields
 are clearly readable; 0.6–0.8 when you're inferring; <0.5 when guessing.`;
 
 /**
- * Run Claude vision on a base64-encoded image. `mediaType` is the image
- * MIME type (image/jpeg, image/png, etc.).
+ * Run Claude on a captured file. Internally dispatches based on the
+ * file's MIME type:
+ *   - image/* → vision API (multimodal image content block)
+ *   - application/pdf → Claude's document content block (native PDF
+ *     understanding — handles scanned and digital PDFs)
+ *   - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+ *     → extract text via mammoth, send as text
+ *   - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+ *     → extract text via exceljs, send as text
+ *   - text/plain | text/csv → send raw text
+ *
+ * Returns the same ClassificationResult shape regardless of input type
+ * so the Inngest runner doesn't need to branch.
  */
-export async function classifyCaptureImage(opts: {
-  imageBase64: string;
-  mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
-  /** For the spend log audit trail. */
+export async function classifyCaptureFile(opts: {
+  fileBuffer: Buffer;
+  mediaType: string;
+  filename?: string | null;
   teamMemberId?: string | null;
 }): Promise<
   | { ok: true; result: ClassificationResult }
@@ -193,6 +204,10 @@ export async function classifyCaptureImage(opts: {
   }
 
   try {
+    // Build the user content block based on file type.
+    const userContent = await buildUserContent(opts);
+    if (!userContent.ok) return userContent;
+
     const response = await client().messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
@@ -202,20 +217,7 @@ export async function classifyCaptureImage(opts: {
       messages: [
         {
           role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: opts.mediaType,
-                data: opts.imageBase64,
-              },
-            },
-            {
-              type: "text",
-              text: "Classify this image and extract whatever fields apply.",
-            },
-          ],
+          content: userContent.content as any,
         },
       ],
     });
@@ -228,7 +230,7 @@ export async function classifyCaptureImage(opts: {
       cachedInputTokens: usage?.cache_read_input_tokens ?? 0,
       outputTokens: usage?.output_tokens ?? 0,
       teamMemberId: opts.teamMemberId ?? null,
-      note: "capture-classify",
+      note: `capture-classify (${opts.mediaType})`,
     });
 
     const toolUse = response.content.find(
@@ -246,7 +248,206 @@ export async function classifyCaptureImage(opts: {
     console.error("[captures/classify] Claude call failed", err);
     return {
       ok: false,
-      error: err?.message ?? "Claude vision call failed",
+      error: err?.message ?? "Claude classify call failed",
     };
   }
+}
+
+/**
+ * Backwards-compat shim: the old image-only entry point is preserved
+ * so existing callers (any older Inngest events still queued) still
+ * work after the refactor.
+ */
+export async function classifyCaptureImage(opts: {
+  imageBase64: string;
+  mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+  teamMemberId?: string | null;
+}) {
+  return classifyCaptureFile({
+    fileBuffer: Buffer.from(opts.imageBase64, "base64"),
+    mediaType: opts.mediaType,
+    teamMemberId: opts.teamMemberId,
+  });
+}
+
+const PROMPT_TEXT =
+  "Classify this and extract whatever fields apply per the rules.";
+
+/**
+ * Build the message-content array for a given file. Returns a structured
+ * result so the caller can short-circuit on extraction failures.
+ */
+async function buildUserContent(opts: {
+  fileBuffer: Buffer;
+  mediaType: string;
+  filename?: string | null;
+}): Promise<
+  | { ok: true; content: unknown[] }
+  | { ok: false; error: string }
+> {
+  const mt = opts.mediaType.toLowerCase();
+  const filenameNote = opts.filename
+    ? `Original filename: ${opts.filename}.\n\n`
+    : "";
+
+  // ---- Images → vision content block ---------------------------------
+  if (mt.startsWith("image/")) {
+    const allowed = new Set([
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+    ]);
+    const claimed = allowed.has(mt) ? mt : "image/jpeg";
+    return {
+      ok: true,
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: claimed,
+            data: opts.fileBuffer.toString("base64"),
+          },
+        },
+        { type: "text", text: PROMPT_TEXT },
+      ],
+    };
+  }
+
+  // ---- PDFs → document content block --------------------------------
+  if (mt === "application/pdf") {
+    return {
+      ok: true,
+      content: [
+        {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: opts.fileBuffer.toString("base64"),
+          },
+        },
+        { type: "text", text: PROMPT_TEXT },
+      ],
+    };
+  }
+
+  // ---- DOCX / DOC → mammoth text extraction --------------------------
+  if (
+    mt ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mt === "application/msword"
+  ) {
+    try {
+      // Lazy import keeps mammoth out of the cold-start bundle for
+      // routes that never see a docx.
+      const mammoth = await import("mammoth");
+      const { value: text } = await mammoth.extractRawText({
+        buffer: opts.fileBuffer,
+      });
+      const truncated = truncateText(text, 100_000);
+      return {
+        ok: true,
+        content: [
+          {
+            type: "text",
+            text:
+              filenameNote +
+              "Document contents (Word doc, text-only extract):\n\n" +
+              truncated +
+              "\n\n" +
+              PROMPT_TEXT,
+          },
+        ],
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: `Couldn't read this Word doc — ${err?.message ?? "extract failed"}.`,
+      };
+    }
+  }
+
+  // ---- XLSX / XLS → exceljs CSV-ish dump -----------------------------
+  if (
+    mt === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    mt === "application/vnd.ms-excel"
+  ) {
+    try {
+      const ExcelJS = (await import("exceljs")).default;
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(opts.fileBuffer);
+      const lines: string[] = [];
+      wb.eachSheet((sheet) => {
+        lines.push(`### Sheet: ${sheet.name}`);
+        sheet.eachRow((row) => {
+          const vals = (row.values as unknown[]).slice(1).map((v) => {
+            if (v === null || v === undefined) return "";
+            if (typeof v === "object" && v !== null && "text" in (v as any)) {
+              return String((v as any).text ?? "");
+            }
+            return String(v);
+          });
+          lines.push(vals.join("\t"));
+        });
+        lines.push("");
+      });
+      const dump = truncateText(lines.join("\n"), 100_000);
+      return {
+        ok: true,
+        content: [
+          {
+            type: "text",
+            text:
+              filenameNote +
+              "Document contents (spreadsheet, tab-separated text-only extract):\n\n" +
+              dump +
+              "\n\n" +
+              PROMPT_TEXT,
+          },
+        ],
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: `Couldn't read this spreadsheet — ${err?.message ?? "extract failed"}.`,
+      };
+    }
+  }
+
+  // ---- Plain text / CSV → utf-8 ----------------------------------
+  if (mt === "text/plain" || mt === "text/csv") {
+    const text = truncateText(opts.fileBuffer.toString("utf-8"), 100_000);
+    return {
+      ok: true,
+      content: [
+        {
+          type: "text",
+          text:
+            filenameNote +
+            (mt === "text/csv" ? "CSV contents:" : "Text file contents:") +
+            "\n\n" +
+            text +
+            "\n\n" +
+            PROMPT_TEXT,
+        },
+      ],
+    };
+  }
+
+  return {
+    ok: false,
+    error: `Unsupported file type for classification: ${opts.mediaType}.`,
+  };
+}
+
+/**
+ * Cap the text we send to Claude so a malicious or massive document
+ * can't blow the token budget. ~100k chars is roughly 25k tokens for
+ * English — comfortable headroom under any per-call limit.
+ */
+function truncateText(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "\n\n[…truncated]";
 }

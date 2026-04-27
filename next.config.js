@@ -38,8 +38,6 @@ const sentryWebpackOptions = {
   // Hide source maps from the public browser bundle so we don't leak
   // original TS/source into the web. Sentry still has them for grouping.
   hideSourceMaps: true,
-  // Strip unused Sentry bits for smaller bundles.
-  disableLogger: true,
 };
 
 module.exports = process.env.SENTRY_DSN

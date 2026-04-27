@@ -43,7 +43,7 @@ import {
   getCapture,
   updateCaptureOutcome,
 } from "@/lib/captures/service";
-import { classifyCaptureImage } from "@/lib/captures/classify";
+import { classifyCaptureFile } from "@/lib/captures/classify";
 import { createTask } from "@/lib/tasks/service";
 import { createEvent } from "@/lib/events/service";
 import { createDirectExpense } from "@/lib/expenses/service";
@@ -1099,8 +1099,10 @@ export const captureClassifyRunner = inngest.createFunction(
       await updateCaptureOutcome(captureId, { status: "classifying" });
     });
 
-    // Step 2: download the image from Storage as base64.
-    const { base64, mediaType } = await step.run("download-image", async () => {
+    // Step 2: download the file from Storage as a Buffer. Inngest
+    // step.run results must be JSON-serializable, so we return base64
+    // here and reconstruct the Buffer in the next step.
+    const { base64, mediaType } = await step.run("download-file", async () => {
       const { data, error } = await (admin as any).storage
         .from("captures")
         .download(capture.image_storage_path);
@@ -1109,32 +1111,16 @@ export const captureClassifyRunner = inngest.createFunction(
       }
       const ab = await (data as Blob).arrayBuffer();
       const b64 = Buffer.from(ab).toString("base64");
-      // Claude's vision API restricts media_type to specific values;
-      // coerce HEIC/HEIF (which iPhones produce) to jpeg-equivalent
-      // for the API call. Real conversion would re-encode bytes; for
-      // now we just claim image/jpeg if it's not in the small set.
-      const allowed = new Set([
-        "image/jpeg",
-        "image/png",
-        "image/webp",
-        "image/gif",
-      ]);
-      const mt = capture.image_mime_type ?? "image/jpeg";
-      const claimed = allowed.has(mt) ? mt : "image/jpeg";
-      return {
-        base64: b64,
-        mediaType: claimed as
-          | "image/jpeg"
-          | "image/png"
-          | "image/webp"
-          | "image/gif",
-      };
+      const mt = capture.image_mime_type ?? "application/octet-stream";
+      return { base64: b64, mediaType: mt };
     });
 
-    // Step 3: Claude vision classification.
+    // Step 3: Classify. The classifier handles type dispatch — images
+    // go to vision, PDFs to document, DOCX/XLSX get text-extracted
+    // first, plain text/CSV gets sent through directly.
     const classification = await step.run("classify", async () => {
-      return classifyCaptureImage({
-        imageBase64: base64,
+      return classifyCaptureFile({
+        fileBuffer: Buffer.from(base64, "base64"),
         mediaType,
         teamMemberId: capture.team_member_id,
       });

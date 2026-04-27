@@ -21,14 +21,30 @@ import { createCapture } from "@/lib/captures/service";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const MAX_BYTES = 10 * 1024 * 1024;
+// 25MB ceiling — comfortably handles any phone photo, most PDFs, and
+// any reasonable spreadsheet/doc. Anthropic's PDF doc API supports up
+// to 32MB per file but we cap below that to leave headroom.
+const MAX_BYTES = 25 * 1024 * 1024;
+
 const ALLOWED_MIME = new Set([
+  // Images (Claude vision)
   "image/jpeg",
   "image/jpg",
   "image/png",
   "image/webp",
   "image/heic",
   "image/heif",
+  // PDFs (Claude document)
+  "application/pdf",
+  // Word docs (we extract text via mammoth before sending)
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword", // older .doc — mammoth handles a subset
+  // Spreadsheets (we extract text via exceljs before sending)
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel", // older .xls
+  // Plain text + CSV — send straight to Claude as text
+  "text/plain",
+  "text/csv",
 ]);
 
 export async function POST(request: Request) {
@@ -69,14 +85,17 @@ export async function POST(request: Request) {
   }
   if (file.size > MAX_BYTES) {
     return NextResponse.json(
-      { ok: false, error: "image too large (max 10MB)" },
+      { ok: false, error: "file too large (max 25MB)" },
       { status: 400 }
     );
   }
-  const mime = file.type || "image/jpeg";
-  if (!ALLOWED_MIME.has(mime.toLowerCase())) {
+  const mime = (file.type || "application/octet-stream").toLowerCase();
+  if (!ALLOWED_MIME.has(mime)) {
     return NextResponse.json(
-      { ok: false, error: `unsupported image type: ${mime}` },
+      {
+        ok: false,
+        error: `unsupported file type: ${mime}. Allowed: images (jpg/png/webp/heic), PDF, DOCX/DOC, XLSX/XLS, TXT, CSV.`,
+      },
       { status: 400 }
     );
   }

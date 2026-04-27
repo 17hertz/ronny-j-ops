@@ -53,16 +53,36 @@ export function CaptureUploader() {
   async function handleFile(file: File) {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
 
-    if (!file.type.startsWith("image/")) {
+    // Allow a wide set: images (vision), PDFs (Claude doc), DOCX/XLSX
+    // (server extracts text), plain text + CSV. Server enforces the
+    // canonical allowlist; this is just a fast UX guard.
+    const t = (file.type || "").toLowerCase();
+    const ok =
+      t.startsWith("image/") ||
+      t === "application/pdf" ||
+      t ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      t === "application/msword" ||
+      t ===
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+      t === "application/vnd.ms-excel" ||
+      t === "text/plain" ||
+      t === "text/csv";
+    if (!ok) {
       setState({
         kind: "error",
         previewUrl: null,
-        message: "Only images are supported (jpg, png, webp, heic).",
+        message:
+          "Unsupported file type. Try an image, PDF, DOCX/DOC, XLSX/XLS, TXT, or CSV.",
       });
       return;
     }
 
-    const previewUrl = URL.createObjectURL(file);
+    // Only image previews use object URLs; for everything else we
+    // render a name + type badge in the tracking UI.
+    const previewUrl = t.startsWith("image/")
+      ? URL.createObjectURL(file)
+      : "";
     setState({ kind: "uploading", previewUrl });
 
     try {
@@ -165,11 +185,22 @@ export function CaptureUploader() {
     return (
       <section className="mt-10 rounded-lg border border-neutral-800 bg-neutral-950 p-5">
         <div className="grid gap-5 sm:grid-cols-[200px_1fr]">
-          <img
-            src={state.previewUrl}
-            alt="Captured"
-            className="max-h-64 w-full rounded-md border border-neutral-800 object-contain bg-neutral-900"
-          />
+          {state.previewUrl ? (
+            <img
+              src={state.previewUrl}
+              alt="Captured"
+              className="max-h-64 w-full rounded-md border border-neutral-800 object-contain bg-neutral-900"
+            />
+          ) : (
+            <div className="flex max-h-64 flex-col items-center justify-center gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-6 py-12 text-center">
+              <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-neutral-500">
+                Document
+              </span>
+              <p className="text-xs text-neutral-400">
+                No preview — the file goes straight to Claude.
+              </p>
+            </div>
+          )}
           <div className="min-w-0">
             {state.kind === "uploading" && (
               <p className="font-mono text-[10px] uppercase tracking-wider text-neutral-500">
@@ -219,7 +250,7 @@ export function CaptureUploader() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv"
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -227,10 +258,10 @@ export function CaptureUploader() {
           }}
         />
         <p className="font-display text-2xl">
-          Drop an image here
+          Drop a file here
         </p>
         <p className="font-mono text-[11px] uppercase tracking-wider text-neutral-500">
-          or click to choose · jpg, png, webp, heic up to 10MB
+          or click to choose · images, PDF, DOCX, XLSX, TXT, CSV · up to 25MB
         </p>
       </label>
     </section>
