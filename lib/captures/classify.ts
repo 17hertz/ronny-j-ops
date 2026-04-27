@@ -344,7 +344,10 @@ async function buildUserContent(opts: {
       // routes that never see a docx.
       const mammoth = await import("mammoth");
       const { value: text } = await mammoth.extractRawText({
-        buffer: opts.fileBuffer,
+        // Cast: newer @types/node makes Buffer generic
+        // (Buffer<ArrayBufferLike>); mammoth's types still expect the
+        // older non-generic Buffer. Runtime shape is identical.
+        buffer: opts.fileBuffer as unknown as Buffer,
       });
       const truncated = truncateText(text, 100_000);
       return {
@@ -377,7 +380,9 @@ async function buildUserContent(opts: {
     try {
       const ExcelJS = (await import("exceljs")).default;
       const wb = new ExcelJS.Workbook();
-      await wb.xlsx.load(opts.fileBuffer);
+      // Cast: ExcelJS types expect non-generic Buffer; @types/node now
+      // returns Buffer<ArrayBufferLike>. Runtime shape is identical.
+      await wb.xlsx.load(opts.fileBuffer as unknown as Buffer);
       const lines: string[] = [];
       wb.eachSheet((sheet) => {
         lines.push(`### Sheet: ${sheet.name}`);
