@@ -139,27 +139,66 @@ const tool: Anthropic.Tool = {
   },
 };
 
-const SYSTEM = `You classify images sent into Ronny J Ops, a live-events booking app.
+const SYSTEM = `You classify documents and images sent into Ronny J Ops,
+an agentic ops app for the artist Ronny J (legal entity: Ronny J Listen
+Up LLC). Ronny is a DJ / performer / streamer / model. Jason (admin)
+runs the back office.
 
-Decision rules:
-- bill_product: receipt with visible SALES TAX from a registered retailer.
-  These don't need a W9 (sales tax already covers state revenue reporting).
-  Example: a Guitar Center receipt for cables.
-- bill_service: invoice for labor/services, often without sales tax.
-  These DO need a W9 because they're 1099-reportable. Example: a
-  freelance lighting tech's invoice.
-- task: a written or printed reminder of something to do (a sticky note,
-  a screenshot of a "remind me to X" message, a checklist item).
-- event: a flyer, save-the-date, calendar invite, venue confirmation —
-  something with a date + time + place.
-- contact: a business card or contact-info block. Capture name + phone +
-  email; downstream code may turn this into a vendor stub.
+PERSPECTIVE MATTERS — read carefully who is paying whom:
+
+- A 'performance agreement', 'booking contract', 'performance offer',
+  'DJ booking', 'show confirmation', 'engagement letter', 'gig offer',
+  or any document where RONNY (or 'Ronny J Listen Up LLC') is being
+  HIRED/BOOKED as the artist/performer/DJ/model/streamer is an EVENT,
+  NOT a bill. He is the talent getting PAID — money flows TO him.
+  Classify these as 'event' even when they read like service contracts
+  with payment schedules, hospitality terms, force majeure clauses,
+  etc. Extract: performance date, performance time (start/end),
+  venue, promoter name + brand into description, fee summary.
+
+- bill_service is ONLY for invoices Ronny RECEIVES from someone HE'S
+  paying — vendors who did work for him (lighting techs, photographers,
+  security, drivers, hair/makeup, etc.). These need W9s because they're
+  1099-reportable expenses. The document is from the vendor's
+  perspective sending him a bill.
+
+- bill_product: a receipt with visible SALES TAX from a registered
+  retailer (Guitar Center, Whole Foods, gas station). No W9 needed —
+  sales tax already covers state revenue reporting. Money out, product
+  in.
+
+- task: a written or printed reminder of something to do (sticky note,
+  screenshot of a 'remind me to X' message, checklist item, simple
+  todo).
+
+- event: in addition to performance bookings (above), also flyers,
+  save-the-dates, calendar invites, venue confirmations, anything with
+  a date + time + place that should land on Ronny's calendar.
+
+- contact: a business card or contact-info block. Capture name + phone
+  + email; downstream code may turn this into a vendor stub.
+
 - other: ambiguous or doesn't fit — flag for human review.
 
-When extracting amounts, use cents (4218 for $42.18). When extracting
-dates, prefer the format on the image; if you must guess year, use the
-current year. Be conservative with confidence: 0.95+ only when fields
-are clearly readable; 0.6–0.8 when you're inferring; <0.5 when guessing.`;
+EXTRACTION HINTS
+
+When extracting amounts, use cents (4218 for $42.18).
+
+When extracting event times that span midnight (e.g. '2:00 AM – 3:30 AM
+on May 21'), the date is the literal calendar date in the document
+(May 21, 02:00, NOT May 22). Don't try to fix what looks 'weird' —
+performance start times often fall in the early morning of the next
+calendar day for a club show.
+
+When the document is a booking, put compensation summary + promoter
+name + venue brand in the description field so Ronny can see the deal
+terms when he opens the event later. Example description:
+"Klubhouse Miami at M2. Promoter: Sivane Ayache. $1,000 flat + 50%
+ticket revenue. 50% paid week of, 50% night of. Bottle service +
+guest list."
+
+Be conservative with confidence: 0.95+ only when fields are clearly
+readable; 0.6–0.8 when inferring; <0.5 when guessing.`;
 
 /**
  * Run Claude on a captured file. Internally dispatches based on the

@@ -208,7 +208,39 @@ export function CaptureUploader() {
               </p>
             )}
             {state.kind === "tracking" && (
-              <CaptureStatusView capture={state.capture} onReset={reset} />
+              <CaptureStatusView
+                capture={state.capture}
+                onReset={reset}
+                onReclassified={() => {
+                  // Reset our local view to a fresh 'pending' state and
+                  // restart the poller. The capture row server-side has
+                  // already been reset by the reclassify endpoint.
+                  setState((prev) =>
+                    prev.kind === "tracking"
+                      ? {
+                          ...prev,
+                          capture: {
+                            ...prev.capture,
+                            status: "pending",
+                            detected_intent: null,
+                            detection_confidence: null,
+                            reply_text: null,
+                            error_message: null,
+                            routed_task_id: null,
+                            routed_event_id: null,
+                            routed_expense_id: null,
+                          },
+                        }
+                      : prev
+                  );
+                  if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+                  pollTimerRef.current = setInterval(
+                    () => pollOnce(state.capture.id),
+                    1500
+                  );
+                  pollOnce(state.capture.id);
+                }}
+              />
             )}
           </div>
         </div>
@@ -271,10 +303,36 @@ export function CaptureUploader() {
 function CaptureStatusView({
   capture,
   onReset,
+  onReclassified,
 }: {
   capture: CaptureView;
   onReset: () => void;
+  onReclassified: () => void;
 }) {
+  const [reclassifying, setReclassifying] = useState(false);
+  const [reclassifyError, setReclassifyError] = useState<string | null>(null);
+
+  async function handleReclassify() {
+    setReclassifying(true);
+    setReclassifyError(null);
+    try {
+      const res = await fetch(`/api/captures/${capture.id}/reclassify`, {
+        method: "POST",
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setReclassifyError(json.error ?? `HTTP ${res.status}`);
+        setReclassifying(false);
+        return;
+      }
+      // Tell parent to restart polling — the row is back to 'pending'.
+      onReclassified();
+    } catch (e: any) {
+      setReclassifyError(e?.message ?? "network error");
+      setReclassifying(false);
+    }
+  }
+
   if (capture.status === "pending" || capture.status === "classifying") {
     return (
       <div>
@@ -282,7 +340,7 @@ function CaptureStatusView({
           {capture.status === "pending" ? "Queued…" : "Classifying with Claude…"}
         </p>
         <p className="mt-2 text-sm text-neutral-400">
-          Looking at your image and figuring out what to do with it.
+          Looking at your file and figuring out what to do with it.
           This usually takes 2–4 seconds.
         </p>
       </div>
@@ -298,13 +356,26 @@ function CaptureStatusView({
         <p className="mt-2 text-sm text-red-200">
           {capture.error_message ?? "Unknown error."}
         </p>
-        <button
-          type="button"
-          onClick={onReset}
-          className="mt-4 rounded-md border border-neutral-800 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-neutral-300 hover:border-neutral-700"
-        >
-          Try another
-        </button>
+        <div className="mt-4 flex gap-2">
+          <button
+            type="button"
+            onClick={handleReclassify}
+            disabled={reclassifying}
+            className="rounded-md border border-amber-700 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-amber-200 hover:border-amber-500 disabled:opacity-50"
+          >
+            {reclassifying ? "Retrying…" : "Reclassify"}
+          </button>
+          <button
+            type="button"
+            onClick={onReset}
+            className="rounded-md border border-neutral-800 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-neutral-300 hover:border-neutral-700"
+          >
+            Try another
+          </button>
+        </div>
+        {reclassifyError && (
+          <p className="mt-2 text-xs text-red-400">{reclassifyError}</p>
+        )}
       </div>
     );
   }
@@ -346,7 +417,7 @@ function CaptureStatusView({
           {capture.reply_text}
         </p>
       )}
-      <div className="mt-4 flex gap-2">
+      <div className="mt-4 flex flex-wrap gap-2">
         {actionLink && (
           <Link
             href={actionLink.href}
@@ -355,6 +426,18 @@ function CaptureStatusView({
             {actionLink.label}
           </Link>
         )}
+        {/* Reclassify lets the user re-run the classifier on the same
+            image. Critical when something landed in needs_review or
+            was misclassified — re-running picks up any prompt updates
+            we've shipped since the original classification. */}
+        <button
+          type="button"
+          onClick={handleReclassify}
+          disabled={reclassifying}
+          className="rounded-md border border-amber-700 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-amber-200 hover:border-amber-500 disabled:opacity-50"
+        >
+          {reclassifying ? "Reclassifying…" : "Reclassify"}
+        </button>
         <button
           type="button"
           onClick={onReset}
@@ -363,6 +446,9 @@ function CaptureStatusView({
           Capture another
         </button>
       </div>
+      {reclassifyError && (
+        <p className="mt-2 text-xs text-red-400">{reclassifyError}</p>
+      )}
     </div>
   );
 }
