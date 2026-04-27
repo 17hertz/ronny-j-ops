@@ -413,6 +413,12 @@ export default async function DashboardPage({
           ← Ronny J Ops
         </Link>
         <div className="flex items-center gap-4">
+          <Link
+            href="/dashboard/capture"
+            className="rounded-md border border-neutral-800 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-neutral-300 transition hover:border-brand hover:text-brand"
+          >
+            Capture
+          </Link>
           <span className="text-sm text-neutral-500">
             {teamMember.full_name}{" "}
             <span className="text-neutral-700">·</span>{" "}

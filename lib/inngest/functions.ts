@@ -39,6 +39,15 @@ import {
   EventPermissionError,
   EventUnauthorizedError,
 } from "@/lib/google/calendar";
+import {
+  getCapture,
+  updateCaptureOutcome,
+} from "@/lib/captures/service";
+import { classifyCaptureImage } from "@/lib/captures/classify";
+import { createTask } from "@/lib/tasks/service";
+import { createEvent } from "@/lib/events/service";
+import { createDirectExpense } from "@/lib/expenses/service";
+import { naiveLocalToUtcIso } from "@/lib/time/naive-iso";
 
 export const reminderRunner = inngest.createFunction(
   {
@@ -1039,6 +1048,291 @@ async function markEventPushOutcome(
 }
 
 /**
+ * Capture → classify → route.
+ *
+ * Fires on `capture/classify` after a user uploads an image (dashboard
+ * drop-zone, MMS, WhatsApp media). Steps:
+ *   1. Load the bill_captures row + download the image bytes from
+ *      Storage.
+ *   2. Send to Claude Sonnet vision with the constrained classifier
+ *      tool (see lib/captures/classify.ts).
+ *   3. Branch on the returned intent:
+ *        task          → createTask
+ *        event         → createEvent
+ *        bill_product  → createDirectExpense (sales-tax purchases,
+ *                        no W9 needed)
+ *        bill_service  → store classification, mark needs_review (the
+ *                        auto-vendor-invite flow is a follow-up)
+ *        contact       → store classification, mark needs_review
+ *        other         → mark needs_review
+ *   4. Update the capture row with status + reply_text + linked artifact.
+ *
+ * Errors (Claude refused, image download failed, downstream service
+ * threw) flip status to 'error' with the message — visible in the
+ * dashboard sync-errors panel and in Sentry once wired.
+ */
+export const captureClassifyRunner = inngest.createFunction(
+  {
+    id: "capture-classify",
+    name: "Classify captured image and route to artifact",
+    // Vision calls are flaky once in a while; allow retries.
+    retries: 2,
+  },
+  { event: "capture/classify" },
+  async ({ event, step }) => {
+    const { captureId } = event.data as { captureId: string };
+    const admin = createAdminClient();
+
+    // Step 1: load the row + flip to 'classifying' so the UI shows
+    // progress on the next poll.
+    const capture = await step.run("load-capture", async () => {
+      const c = await getCapture(captureId);
+      if (!c) throw new Error(`capture not found: ${captureId}`);
+      return c;
+    });
+
+    if (capture.status === "done" || capture.status === "needs_review") {
+      return { skipped: true, reason: `already ${capture.status}` };
+    }
+
+    await step.run("mark-classifying", async () => {
+      await updateCaptureOutcome(captureId, { status: "classifying" });
+    });
+
+    // Step 2: download the image from Storage as base64.
+    const { base64, mediaType } = await step.run("download-image", async () => {
+      const { data, error } = await (admin as any).storage
+        .from("captures")
+        .download(capture.image_storage_path);
+      if (error || !data) {
+        throw new Error(`download failed: ${error?.message ?? "no data"}`);
+      }
+      const ab = await (data as Blob).arrayBuffer();
+      const b64 = Buffer.from(ab).toString("base64");
+      // Claude's vision API restricts media_type to specific values;
+      // coerce HEIC/HEIF (which iPhones produce) to jpeg-equivalent
+      // for the API call. Real conversion would re-encode bytes; for
+      // now we just claim image/jpeg if it's not in the small set.
+      const allowed = new Set([
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+      ]);
+      const mt = capture.image_mime_type ?? "image/jpeg";
+      const claimed = allowed.has(mt) ? mt : "image/jpeg";
+      return {
+        base64: b64,
+        mediaType: claimed as
+          | "image/jpeg"
+          | "image/png"
+          | "image/webp"
+          | "image/gif",
+      };
+    });
+
+    // Step 3: Claude vision classification.
+    const classification = await step.run("classify", async () => {
+      return classifyCaptureImage({
+        imageBase64: base64,
+        mediaType,
+        teamMemberId: capture.team_member_id,
+      });
+    });
+
+    if (!classification.ok) {
+      await updateCaptureOutcome(captureId, {
+        status: "error",
+        error_message: classification.error,
+      });
+      return { ok: false, reason: classification.error };
+    }
+
+    const result = classification.result;
+
+    // Step 4: route based on intent. Each branch updates the capture
+    // row with status + reply_text + artifact linkage.
+    if (!capture.team_member_id) {
+      // No team member to attribute to (orphan capture from unknown
+      // sender). Mark as needs_review and bail.
+      await updateCaptureOutcome(captureId, {
+        status: "needs_review",
+        classification: result as any,
+        detected_intent: result.intent,
+        detection_confidence: result.confidence,
+        detection_reasoning: result.reasoning ?? null,
+        reply_text:
+          "Got the image but couldn't attribute it to a team member.",
+      });
+      return { ok: true, intent: result.intent, needs_review: true };
+    }
+
+    const teamMemberId = capture.team_member_id;
+    const memberTz = await step.run("load-member-tz", async () => {
+      const { data } = (await (admin as any)
+        .from("team_members")
+        .select("timezone")
+        .eq("id", teamMemberId)
+        .maybeSingle()) as { data: { timezone: string } | null };
+      return data?.timezone || "America/New_York";
+    });
+
+    try {
+      switch (result.intent) {
+        case "task": {
+          const task = await step.run("route-task", async () =>
+            createTask({
+              teamMemberId,
+              title: (result.title || "Captured task").trim(),
+              notes: result.description ?? null,
+              dueAt: result.due_date
+                ? naiveLocalToUtcIso(`${result.due_date}T17:00:00`, memberTz)
+                : null,
+              source: "agent",
+            })
+          );
+          await updateCaptureOutcome(captureId, {
+            status: "done",
+            classification: result as any,
+            detected_intent: result.intent,
+            detection_confidence: result.confidence,
+            detection_reasoning: result.reasoning ?? null,
+            routed_task_id: task.id,
+            reply_text: `✓ Added task: ${truncate(task.title, 60)}`,
+          });
+          return { ok: true, intent: "task", taskId: task.id };
+        }
+        case "event": {
+          if (!result.event_starts_at) {
+            // Couldn't extract a start time — needs human input.
+            await updateCaptureOutcome(captureId, {
+              status: "needs_review",
+              classification: result as any,
+              detected_intent: result.intent,
+              detection_confidence: result.confidence,
+              detection_reasoning: result.reasoning ?? null,
+              reply_text:
+                "Looks like an event but I couldn't read the start time. Add it manually.",
+            });
+            return { ok: true, intent: "event", needs_review: true };
+          }
+          const startsAtUtc = naiveLocalToUtcIso(
+            result.event_starts_at,
+            memberTz
+          );
+          const endsAtUtc = result.event_ends_at
+            ? naiveLocalToUtcIso(result.event_ends_at, memberTz)
+            : null;
+          const ev = await step.run("route-event", async () =>
+            createEvent({
+              teamMemberId,
+              title: (result.title || "Captured event").trim(),
+              description: result.description ?? null,
+              location: result.event_location ?? null,
+              startsAt: startsAtUtc,
+              endsAt: endsAtUtc,
+              timezone: memberTz,
+              source: "agent",
+            })
+          );
+          await updateCaptureOutcome(captureId, {
+            status: "done",
+            classification: result as any,
+            detected_intent: result.intent,
+            detection_confidence: result.confidence,
+            detection_reasoning: result.reasoning ?? null,
+            routed_event_id: ev.id,
+            reply_text: `✓ Scheduled: ${truncate(ev.title, 50)}`,
+          });
+          return { ok: true, intent: "event", eventId: ev.id };
+        }
+        case "bill_product": {
+          if (!result.amount_cents) {
+            await updateCaptureOutcome(captureId, {
+              status: "needs_review",
+              classification: result as any,
+              detected_intent: result.intent,
+              detection_confidence: result.confidence,
+              detection_reasoning: result.reasoning ?? null,
+              reply_text:
+                "Looks like a receipt but I couldn't read the total. Add it manually.",
+            });
+            return { ok: true, intent: "bill_product", needs_review: true };
+          }
+          const exp = await step.run("route-expense", async () =>
+            createDirectExpense({
+              teamMemberId,
+              merchant: result.merchant?.trim() || "(unknown)",
+              amountCents: result.amount_cents!,
+              salesTaxCents: result.sales_tax_cents ?? 0,
+              category: "other",
+              expenseDate: result.due_date ?? null,
+              description: result.description ?? null,
+              receiptImagePath: capture.image_storage_path,
+              sourceCaptureId: captureId,
+            })
+          );
+          const dollars = (exp.amount_cents / 100).toLocaleString("en-US", {
+            style: "currency",
+            currency: "USD",
+          });
+          await updateCaptureOutcome(captureId, {
+            status: "done",
+            classification: result as any,
+            detected_intent: result.intent,
+            detection_confidence: result.confidence,
+            detection_reasoning: result.reasoning ?? null,
+            routed_expense_id: exp.id,
+            reply_text: `✓ Logged ${dollars} expense at ${truncate(
+              exp.merchant,
+              30
+            )}.`,
+          });
+          return { ok: true, intent: "bill_product", expenseId: exp.id };
+        }
+        case "bill_service":
+        case "contact":
+        case "other":
+        default: {
+          // For these, defer to human action. The classification is
+          // stored so a future "needs review" dashboard panel can
+          // surface them and let Jason approve / route manually.
+          await updateCaptureOutcome(captureId, {
+            status: "needs_review",
+            classification: result as any,
+            detected_intent: result.intent,
+            detection_confidence: result.confidence,
+            detection_reasoning: result.reasoning ?? null,
+            reply_text:
+              result.intent === "bill_service"
+                ? "Looks like a service invoice — vendor needs a W9. Open the capture to send the intake link."
+                : result.intent === "contact"
+                  ? "Looks like a contact card. Open to add as a vendor or contact."
+                  : "I couldn't confidently file this. Open it to file manually.",
+          });
+          return { ok: true, intent: result.intent, needs_review: true };
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await updateCaptureOutcome(captureId, {
+        status: "error",
+        classification: result as any,
+        detected_intent: result.intent,
+        detection_confidence: result.confidence,
+        detection_reasoning: result.reasoning ?? null,
+        error_message: msg,
+      });
+      throw err;
+    }
+  }
+);
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
+
+/**
  * Collect all functions the serve handler should register. If we add more
  * functions later (e.g. a nightly digest), just append to this array.
  */
@@ -1047,4 +1341,5 @@ export const functions = [
   taskPushRunner,
   googleTokenRefreshCron,
   eventPushRunner,
+  captureClassifyRunner,
 ];
